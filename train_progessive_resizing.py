@@ -32,10 +32,15 @@ from lr_finder_torch import run_lr_finder
 from torch.amp import autocast, GradScaler
 from train_test_modules import mixup_criterion
 
+import warnings
+warnings.filterwarnings("ignore", category=UserWarning, module="torch.utils._sympy")
+
+
 # ==============================================================
 # ⚙️ CONFIG
 # ==============================================================
-DATA_DIR = "./data"
+DATA_DIR = "./sample_data"
+NUM_CLASSES = 10
 BATCH_SIZE = 256
 IMG_SIZE = 224
 NUM_EPOCHS = 25
@@ -227,75 +232,39 @@ def main():
 
     print(f"\n🚀 Training started at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} on {DEVICE}")
 
-    # -----------------------------------------------------------
-    # 📦 Data
-    train_loader, val_loader, num_classes = get_dataloaders(DATA_DIR, BATCH_SIZE, IMG_SIZE)
-
+    # Progressive resizing stages
+    stages = [
+        {"img_size": 56, "batch_size": 4096, "epochs": 25},   # Stage 0: learn coarse features - 8
+        {"img_size": 112, "batch_size": 1024, "epochs": 25},   # Stage 1: learn coarse features - 8
+        {"img_size": 224, "batch_size": 256, "epochs": 25},  # Stage 2: standard ImageNet resolution
+        # Optionally, add 320 stage if GPU memory allows
+        # {"img_size": 320, "batch_size": 128, "epochs": 10}, # Stage 3: fine-tune the model
+    ]
+    # stages = [
+    #     {"img_size": 56, "batch_size": 512, "epochs": 10},   # Stage 0: learn coarse features - 8
+    #     {"img_size": 112, "batch_size": 256, "epochs": 10},   # Stage 1: learn coarse features - 8
+    #     {"img_size": 224, "batch_size": 128, "epochs": 10},  # Stage 2: standard ImageNet resolution
+    #     # Optionally, add 320 stage if GPU memory allows
+    #     {"img_size": 320, "batch_size": 64, "epochs": 10}, # Stage 3: fine-tune the model
+    # ]
     # -----------------------------------------------------------
     # 🧠 Model setup
-    model = create_model(num_classes=num_classes, pretrained=False).to(DEVICE)
+    model = create_model(num_classes=NUM_CLASSES, pretrained=False).to(DEVICE)
 
     # Try to compile the model (PyTorch 2.x). Safe to ignore failures.
     try:
         model = torch.compile(model)
         print("⚡ model compiled with torch.compile()")
     except Exception:
+        print("Failed to compile model with torch.compile(), continuing without compilation")
         pass
 
-    criterion = nn.CrossEntropyLoss()
-    optimizer = optim.SGD(model.parameters(), lr=1e-3, momentum=0.9, weight_decay=1e-4)
-
-    # -----------------------------------------------------------
-    # 🔍 LR Finder
-    print("\n🔍 Running Learning Rate Finder...")
-    # Use a small temp optimizer copy and model copy to run LR finder without altering original optimizer
-    # We use the model and optimizer provided (lr_finder will cache & reset)
-
-    lr_finder = LRFinder(model, optimizer, criterion, device=DEVICE, cache_dir=PLOTS_DIR)
-    lr_finder.range_test(train_loader, start_lr=1e-6, end_lr=10, num_iter=100)
-
-    # # Plot and get LR suggestions (plot returns suggested_lr, safe_lr)
-    best_lr, safe_lr = lr_finder.plot(
-        save_path=os.path.join(PLOTS_DIR, "lr_finder_plot.png"),
-        save_csv=True,
-        suggest=True,
-        annotate=True
-    )
-    # best_lr, safe_lr = run_lr_finder(model, optimizer, criterion, train_loader, 
-    #                                  device=DEVICE, start_lr=1e-6, end_lr=10, num_iter=100, 
-    #                                  cache_dir=PLOTS_DIR, use_amp=True)
-    # Fallback if LR finder fails
-    if best_lr is None or not math.isfinite(best_lr) or best_lr <= 0:
-        print("LR Finder returned invalid value. Falling back to 1e-3.")
-        best_lr, safe_lr = 1e-3, 1e-3 * 0.3
-
-    print(f"\nRaw Suggested LR: {best_lr:.6f}")
-    print(f"Safe Max LR for OneCycleLR: {safe_lr:.6f}")
-
-    # Clamp LR to safe bounds
-    lr_floor, lr_ceiling = 1e-6, 0.1
-    use_lr = float(max(lr_floor, min(safe_lr, lr_ceiling)))
-    print(f"Final Selected LR → {use_lr:.6f}")
-
-    # -----------------------------------------------------------
-    # ♻️ Reset model + optimizer cleanly (recreate to clear any LR-finder state)
-    print("Resetting model and optimizer after LR Finder...")
-    model = create_model(num_classes=num_classes, pretrained=False).to(DEVICE)
-    try:
-        model = torch.compile(model)
-    except Exception:
-        pass
-    optimizer = optim.SGD(model.parameters(), lr=use_lr, momentum=0.9, weight_decay=1e-4)
-    criterion = nn.CrossEntropyLoss()
+    # Criterion
+    criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
 
     # -----------------------------------------------------------
     # 🌀 OneCycleLR Scheduler (per step)
-    scheduler = create_onecycle_scheduler(
-        optimizer=optimizer,
-        max_lr=use_lr,
-        train_loader_len=len(train_loader),
-        epochs=NUM_EPOCHS,
-    )
+
 
     # ============================================================
     # Prepare a single GradScaler to pass through epochs (keeps state)
@@ -305,72 +274,133 @@ def main():
     # 📊 Training Loop
     best_acc = 0.0
     history = {"train_loss": [], "val_loss": [], "train_acc": [], "val_acc": [], "lr": [], "mom": []}
-
+    prev_weights = None
+    global_epoch = 0
+    NUM_EPOCHS = sum(stage["epochs"] for stage in stages)
     # with open(LOG_FILE, "w") as log:
     #     log.write("Epoch,Train_Loss,Train_Acc,Val_Loss,Val_Acc,Learning_Rate,Momentum\n")
+    for stage_idx, stage in enumerate(stages):
+        IMG_SIZE = stage["img_size"]
+        BATCH_SIZE = stage["batch_size"]
+        NUM_EPOCHS_STAGE = stage["epochs"]
+        print(f"\n🔹 Stage {stage_idx+1}: IMG_SIZE={IMG_SIZE}, BATCH_SIZE={BATCH_SIZE}, EPOCHS={NUM_EPOCHS_STAGE}")
 
-    for epoch in range(NUM_EPOCHS):
-        epoch_start = time.time()
+        # ----------------------------
+        # Load dataloaders with new size
+        train_loader, val_loader, num_classes = get_dataloaders(DATA_DIR, BATCH_SIZE, IMG_SIZE)
 
-        train_loss, train_acc, scaler = train_one_epoch(model, train_loader, optimizer, criterion, DEVICE, scheduler, scaler,use_mixup_fn= False,num_classes=num_classes)
-        val_loss, val_acc = validate(model, val_loader, criterion, DEVICE,num_classes=num_classes)
+         # ----------------------------
+        # Reset optimizer for new stage
+        optimizer = optim.SGD(model.parameters(), lr=1e-3, momentum=0.9, weight_decay=1e-4)
 
-        current_lr = scheduler.get_last_lr()[0] if scheduler else use_lr
-        current_mom = optimizer.param_groups[0].get("momentum", None)
+        # LR Finder only for first stage or if desired
+        if stage_idx == 0:
+            # print("\n🔍 Running Learning Rate Finder...")
+            # lr_finder = LRFinder(model, optimizer, criterion, device=DEVICE, cache_dir=PLOTS_DIR)
+            # lr_finder.range_test(train_loader, start_lr=1e-6, end_lr=10, num_iter=100)
+            # best_lr, safe_lr = lr_finder.plot(
+            #     save_path=os.path.join(PLOTS_DIR, f"lr_finder_stage_{IMG_SIZE}.png"),
+            #     save_csv=True,
+            #     suggest=True,
+            #     annotate=True
+            # )
+            # if best_lr is None or not math.isfinite(best_lr) or best_lr <= 0:
+            #     print("LR Finder returned invalid value. Falling back to 1e-3.")
+            #     best_lr, safe_lr = 1e-3, 1e-3 * 0.3
+            # use_lr = float(max(1e-6, min(safe_lr, 0.1)))
+            use_lr = 0.1
+        else:
+            # Optionally reduce LR slightly in higher stages
+            use_lr *= 0.75
+            print(f"Stage {stage_idx+1} LR set to {use_lr:.6f}")
 
-        history["train_loss"].append(train_loss)
-        history["val_loss"].append(val_loss)
-        history["train_acc"].append(train_acc)
-        history["val_acc"].append(val_acc)
-        history["lr"].append(current_lr)
-        history["mom"].append(current_mom)
-
-        epoch_time = time.time() - epoch_start
-
-        print(
-            f"[Epoch {epoch+1:03}/{NUM_EPOCHS}] | ⏱️ {epoch_time/60:.2f}m | "
-            f"LR: {current_lr:.6f} | Train Acc: {train_acc*100:.2f}% | Val Acc: {val_acc*100:.2f}%"
+    # ----------------------------
+        scheduler = create_onecycle_scheduler(
+            optimizer=optimizer,
+            max_lr=use_lr,
+            train_loader_len=len(train_loader),
+            epochs=NUM_EPOCHS_STAGE,
         )
 
-        # ---- SAVE MODELS ----
-        if val_acc > best_acc:
-            best_acc = val_acc
-            torch.save(model.state_dict(), SAVE_BEST)
-            print(f"New Best Accuracy: {best_acc*100:.2f}% (saved as {SAVE_BEST})\033[0m")
-            with open(LOG_FILE, "a") as log:
-                log.write(f"New Best Accuracy: {best_acc*100:.2f}% (saved as {SAVE_BEST})\033[0m")
+    # ----------------------------
+        # Load previous stage weights if any
+        if prev_weights:
+            model.load_state_dict(prev_weights)
+            print(f"🔄 Loaded weights from previous stage")
+    
 
-        torch.save(model.state_dict(), SAVE_LAST)
+    # ----------------------------
+        # Stage training loop
+        for epoch in range(NUM_EPOCHS_STAGE):
+            global_epoch += 1
+            epoch_start = time.time()
 
-        # ---- LOG ----
-        with open(LOG_FILE, "a") as log:
-            log.write(
-                # f"{train_loss:.4f},{train_acc:.4f},{val_loss:.4f},{val_acc:.4f},{current_lr:.6f},{current_mom:.4f}\n"
-                f"[Epoch {epoch+1:03}/{NUM_EPOCHS}] | ⏱️ {epoch_time/60:.2f}m | "
-                f"LR: {current_lr:.6f} | Train Acc: {train_acc*100:.2f}% | Train Loss: {train_loss:.4f} | Val Acc: {val_acc*100:.2f}% | Val Loss: {val_loss:.4f} | "
-                f"Momentum: {current_mom:.4f} \n"
+            # ----------------------------
+            # Load dataloaders with new size
+            train_loader, val_loader, num_classes = get_dataloaders(DATA_DIR, BATCH_SIZE, IMG_SIZE)
+
+            train_loss, train_acc, scaler = train_one_epoch(model, train_loader, optimizer, criterion, DEVICE,
+                                                             scheduler, scaler,use_mixup_fn= False,num_classes=num_classes)
+            val_loss, val_acc = validate(model, val_loader, criterion, DEVICE,num_classes=num_classes)
+
+            current_lr = scheduler.get_last_lr()[0] if scheduler else use_lr
+            current_mom = optimizer.param_groups[0].get("momentum", None)
+
+            history["train_loss"].append(train_loss)
+            history["val_loss"].append(val_loss)
+            history["train_acc"].append(train_acc)
+            history["val_acc"].append(val_acc)
+            history["lr"].append(current_lr)
+            history["mom"].append(current_mom)
+
+            epoch_time = time.time() - epoch_start
+
+            print(
+                f"[Epoch {global_epoch+1:03}/{NUM_EPOCHS}] | ⏱️ {epoch_time/60:.2f}m | "
+                f"LR: {current_lr:.6f} | Train Acc: {train_acc*100:.2f}% | Val Acc: {val_acc*100:.2f}%"
             )
 
-        # ---- DYNAMIC PLOTS ----
-        epochs_so_far = range(1, epoch + 2)
+            # ---- SAVE MODELS ----
+            if val_acc > best_acc:
+                best_acc = val_acc
+                torch.save(model.state_dict(), SAVE_BEST)
+                prev_weights = model.state_dict()  # carry forward
+                print(f"New Best Accuracy: {best_acc*100:.2f}% (saved as {SAVE_BEST})\033[0m")
+                with open(LOG_FILE, "a") as log:
+                    log.write(f"New Best Accuracy: {best_acc*100:.2f}% (saved as {SAVE_BEST})\033[0m")
 
-        def save_plot(x, y_dict, title, ylabel, filename):
-            plt.figure(figsize=(8, 5))
-            for label, y in y_dict.items():
-                plt.plot(x, y, marker='o', label=label)
-            plt.xlabel("Epoch")
-            plt.ylabel(ylabel)
-            plt.title(title)
-            plt.legend()
-            plt.grid(True, linestyle="--", alpha=0.7)
-            plt.tight_layout()
-            plt.savefig(os.path.join(PLOTS_DIR, filename))
-            plt.close()
+            torch.save(model.state_dict(), SAVE_LAST)
 
-        save_plot(epochs_so_far, {"Train Acc": history["train_acc"], "Val Acc": history["val_acc"]}, "Accuracy", "Accuracy", "accuracy_live.png")
-        save_plot(epochs_so_far, {"Train Loss": history["train_loss"], "Val Loss": history["val_loss"]}, "Loss", "Loss", "loss_live.png")
-        save_plot(epochs_so_far, {"Learning Rate": history["lr"]}, "Learning Rate", "LR", "lr_live.png")
-        save_plot(epochs_so_far, {"Momentum": history["mom"]}, "Momentum", "Momentum", "momentum_live.png")
+            # ---- LOG ----
+            with open(LOG_FILE, "a") as log:
+                log.write(
+                    # f"{train_loss:.4f},{train_acc:.4f},{val_loss:.4f},{val_acc:.4f},{current_lr:.6f},{current_mom:.4f}\n"
+                    f"[Epoch {epoch+1:03}/{NUM_EPOCHS}] | ⏱️ {epoch_time/60:.2f}m | "
+                    f"LR: {current_lr:.6f} | Train Acc: {train_acc*100:.2f}% | Train Loss: {train_loss:.4f} | Val Acc: {val_acc*100:.2f}% | Val Loss: {val_loss:.4f} | "
+                    f"Momentum: {current_mom:.4f} \n"
+                )
+
+            # ---- DYNAMIC PLOTS ----
+            # epochs_so_far = range(1, epoch + 2)
+            epochs_so_far = range(1, global_epoch + 1)
+
+            def save_plot(x, y_dict, title, ylabel, filename):
+                plt.figure(figsize=(8, 5))
+                for label, y in y_dict.items():
+                    plt.plot(x, y, marker='o', label=label)
+                plt.xlabel("Epoch")
+                plt.ylabel(ylabel)
+                plt.title(title)
+                plt.legend()
+                plt.grid(True, linestyle="--", alpha=0.7)
+                plt.tight_layout()
+                plt.savefig(os.path.join(PLOTS_DIR, filename))
+                plt.close()
+
+            save_plot(epochs_so_far, {"Train Acc": history["train_acc"], "Val Acc": history["val_acc"]}, "Accuracy", "Accuracy", "accuracy_live.png")
+            save_plot(epochs_so_far, {"Train Loss": history["train_loss"], "Val Loss": history["val_loss"]}, "Loss", "Loss", "loss_live.png")
+            save_plot(epochs_so_far, {"Learning Rate": history["lr"]}, "Learning Rate", "LR", "lr_live.png")
+            save_plot(epochs_so_far, {"Momentum": history["mom"]}, "Momentum", "Momentum", "momentum_live.png")
 
     # -----------------------------------------------------------
     print(f"\n🏁 Training Complete — Best Val Acc: {best_acc*100:.2f}%")

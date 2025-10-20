@@ -55,14 +55,14 @@ class AlbumentationsTransform:
         return augmented["image"]  # return only the image
 
 
-def get_cifar100_albumentations_transforms_train(CIFAR100_MEAN, CIFAR100_STD,CIFAR100_MEAN_255):
+def get_albumentations_transforms_train(MEAN, STD,MEAN_255):
     """
     Creates an Albumentations Compose object for CIFAR-10 augmentation.
     """
 
     return A.Compose([
-        A.PadIfNeeded(min_height=40, min_width=40, border_mode=0, value=(0,0,0)),
-        A.RandomCrop(32, 32),
+        A.PadIfNeeded(min_height=256, min_width=256, border_mode=0, value=(0,0,0)),
+        A.RandomCrop(224, 224),
         # 1. Horizontal Flip
         A.HorizontalFlip(p=0.5),
 
@@ -83,32 +83,34 @@ def get_cifar100_albumentations_transforms_train(CIFAR100_MEAN, CIFAR100_STD,CIF
             min_holes=1,
             min_height=16,
             min_width=16,
-            fill_value=CIFAR100_MEAN_255,  # must match pre-normalization scale
+            fill_value=MEAN_255,  # must match pre-normalization scale
             mask_fill_value=None
         ),
 
         # 4. Normalize and convert to Tensor
-        A.Normalize(mean=CIFAR100_MEAN, std=CIFAR100_STD, max_pixel_value=255.0),
+        A.Normalize(mean=MEAN, std=STD, max_pixel_value=255.0),
         ToTensorV2(),
     ])
     # Train transforms
 
 
-def get_cifar100_albumentations_transforms_test(CIFAR100_MEAN, CIFAR100_STD):
+def get_albumentations_transforms_test(MEAN, STD):
     """
     Creates an Albumentations Compose object for CIFAR-10 test augmentation.
     """
 
     return A.Compose([
-        A.Normalize(mean=CIFAR100_MEAN, std=CIFAR100_STD, max_pixel_value=255.0),
+        A.PadIfNeeded(min_height=256, min_width=256, border_mode=0, value=(0,0,0)),
+        A.CenterCrop(224, 224),
+        A.Normalize(mean=MEAN, std=STD, max_pixel_value=255.0),
         ToTensorV2(),
     ])
 
-def get_cifar100_albumentations_transforms_train_val_2(CIFAR100_MEAN, CIFAR100_STD,CIFAR100_MEAN_255):
+def get_albumentations_transforms_train_val_2(MEAN, STD,MEAN_255):
     """
     Creates an Albumentations Compose object for CIFAR-100 train augmentation.
     """
-    train_transforms = get_cifar100_albumentations_transforms_train(CIFAR100_MEAN, CIFAR100_STD,CIFAR100_MEAN_255)
-    test_transforms = get_cifar100_albumentations_transforms_test(CIFAR100_MEAN, CIFAR100_STD)
+    train_transforms = get_albumentations_transforms_train(MEAN, STD,MEAN_255)
+    test_transforms = get_albumentations_transforms_test(MEAN, STD)
     return train_transforms, test_transforms
 

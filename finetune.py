@@ -23,11 +23,11 @@ from datetime import datetime
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 
-from data_loader import get_dataloaders, get_mixup_fn
-from model import create_model
+from data_loader import get_dataloaders
+from model import create_model,create_finetuned_model
 from cyclic_scheduler import create_onecycle_scheduler
-from lr_finder_custom import LRFinder
-from lr_finder_torch import run_lr_finder
+from lr_finder import LRFinder
+
 # Modern AMP imports
 from torch.amp import autocast, GradScaler
 from train_test_modules import mixup_criterion
@@ -35,15 +35,15 @@ from train_test_modules import mixup_criterion
 # ==============================================================
 # ⚙️ CONFIG
 # ==============================================================
-DATA_DIR = "./data"
-BATCH_SIZE = 256
+DATA_DIR = "./sample_data_2"
+BATCH_SIZE = 1024
 IMG_SIZE = 224
-NUM_EPOCHS = 25
+NUM_EPOCHS = 50
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-SAVE_BEST = "./train/best_weights.pth"
-SAVE_LAST = "./train/last_weights.pth"
-LOG_FILE = "./train/training_log.txt"
-PLOTS_DIR = "./train/plots"
+SAVE_BEST = "./finetuned/best_weights.pth"
+SAVE_LAST = "./finetuned/last_weights.pth"
+LOG_FILE = "./finetuned/training_log.txt"
+PLOTS_DIR = "./finetuned/plots"
 
 os.makedirs(PLOTS_DIR, exist_ok=True)
 
@@ -56,7 +56,6 @@ torch.backends.cudnn.allow_tf32 = True
 try:
     torch.set_float32_matmul_precision("high")
 except Exception:
-    print("Failed to set float32 matmul precision")
     pass
 # ==============================================================
 
@@ -73,7 +72,7 @@ def format_mem(bytes_val):
 # ==============================================================
 # ⚡ Optimized Training & Validation Loops (AMP + non-blocking)
 # ==============================================================
-def train_one_epoch(model, dataloader, optimizer, criterion, device, scheduler=None, scaler=None, use_mixup_fn=False,num_classes=1000):
+def train_one_epoch(model, dataloader, optimizer, criterion, device, scheduler=None, scaler=None, mixup_fn=None):
     model.train()
     total_loss, correct, total = 0.0, 0, 0
     start_time = time.time()
@@ -94,35 +93,18 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device, scheduler=N
     for batch_idx, (inputs, labels) in pbar:
         inputs = inputs.to(device, non_blocking=True)
         labels = labels.to(device, non_blocking=True)
-        # Forward (autocast for GPU only)
-        with autocast(device_type=device_type, dtype=torch.float16 if device_type == "cuda" else torch.float32):
-            if use_mixup_fn == True:
-                print("Using Mixup")
-                mixup_fn = get_mixup_fn(mixup_alpha=0.2, cutmix_alpha=1.0, mixup_prob=1.0, label_smoothing=0.1, num_classes=num_classes)
-                if "Mixup" in str(type(mixup_fn)):
-                    print("Using Mixup timm interface")
-                    inputs, targets = mixup_fn(inputs, labels)
-                    outputs = model(inputs)
-                    loss = criterion(outputs, targets)
-                else:
-                    print("Using Mixup custom interface")
-                    # SimpleMixup fallback
-                    inputs, y_a, y_b, lam = mixup_fn(inputs, labels)
-                    outputs = model(inputs)
-                    loss = mixup_criterion(criterion, outputs, y_a, y_b, lam)
-            else:
-                outputs = model(inputs)
-                loss = criterion(outputs, labels)
+        if mixup_fn is not None:
+            inputs, labels = mixup_fn(inputs, labels)
 
         optimizer.zero_grad(set_to_none=True)
 
-        # # Forward (autocast for GPU only)
-        # with autocast(device_type=device_type, dtype=torch.float16 if device_type == "cuda" else torch.float32):
-        #     outputs = model(inputs)
-        #     if use_mixup_fn == True:
-        #         loss = mixup_criterion(criterion, outputs, labels)
-        #     else:
-        #         loss = criterion(outputs, labels)
+        # Forward (autocast for GPU only)
+        with autocast(device_type=device_type, dtype=torch.float16 if device_type == "cuda" else torch.float32):
+            outputs = model(inputs)
+            if mixup_fn is not None:
+                loss = mixup_criterion(criterion, outputs, labels)
+            else:
+                loss = criterion(outputs, labels)
 
         # Backward + optimizer step (with GradScaler)
         scaler.scale(loss).backward()
@@ -162,7 +144,7 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device, scheduler=N
     return total_loss / total, correct / total, scaler
 
 
-def validate(model, dataloader, criterion, device,num_classes=1000):
+def validate(model, dataloader, criterion, device):
     model.eval()
     total_loss, correct, total = 0.0, 0, 0
     start_time = time.time()
@@ -180,7 +162,6 @@ def validate(model, dataloader, criterion, device,num_classes=1000):
         for batch_idx, (inputs, labels) in pbar:
             inputs = inputs.to(device, non_blocking=True)
             labels = labels.to(device, non_blocking=True)
-
             # use autocast for faster inference on GPU
             with autocast(device_type=device_type, dtype=torch.float16 if device_type == "cuda" else torch.float32):
                 outputs = model(inputs)
@@ -233,7 +214,7 @@ def main():
 
     # -----------------------------------------------------------
     # 🧠 Model setup
-    model = create_model(num_classes=num_classes, pretrained=False).to(DEVICE)
+    model = create_finetuned_model(num_classes=num_classes, weights_path="./best_weights.pth").to(DEVICE)
 
     # Try to compile the model (PyTorch 2.x). Safe to ignore failures.
     try:
@@ -250,20 +231,17 @@ def main():
     print("\n🔍 Running Learning Rate Finder...")
     # Use a small temp optimizer copy and model copy to run LR finder without altering original optimizer
     # We use the model and optimizer provided (lr_finder will cache & reset)
-
     lr_finder = LRFinder(model, optimizer, criterion, device=DEVICE, cache_dir=PLOTS_DIR)
     lr_finder.range_test(train_loader, start_lr=1e-6, end_lr=10, num_iter=100)
 
-    # # Plot and get LR suggestions (plot returns suggested_lr, safe_lr)
+    # Plot and get LR suggestions (plot returns suggested_lr, safe_lr)
     best_lr, safe_lr = lr_finder.plot(
         save_path=os.path.join(PLOTS_DIR, "lr_finder_plot.png"),
         save_csv=True,
         suggest=True,
         annotate=True
     )
-    # best_lr, safe_lr = run_lr_finder(model, optimizer, criterion, train_loader, 
-    #                                  device=DEVICE, start_lr=1e-6, end_lr=10, num_iter=100, 
-    #                                  cache_dir=PLOTS_DIR, use_amp=True)
+
     # Fallback if LR finder fails
     if best_lr is None or not math.isfinite(best_lr) or best_lr <= 0:
         print("LR Finder returned invalid value. Falling back to 1e-3.")
@@ -280,7 +258,8 @@ def main():
     # -----------------------------------------------------------
     # ♻️ Reset model + optimizer cleanly (recreate to clear any LR-finder state)
     print("Resetting model and optimizer after LR Finder...")
-    model = create_model(num_classes=num_classes, pretrained=False).to(DEVICE)
+    # model = create_model(num_classes=num_classes, pretrained=False).to(DEVICE)
+    model = create_finetuned_model(num_classes=num_classes, weights_path="./best_weights.pth").to(DEVICE)
     try:
         model = torch.compile(model)
     except Exception:
@@ -306,14 +285,14 @@ def main():
     best_acc = 0.0
     history = {"train_loss": [], "val_loss": [], "train_acc": [], "val_acc": [], "lr": [], "mom": []}
 
-    # with open(LOG_FILE, "w") as log:
-    #     log.write("Epoch,Train_Loss,Train_Acc,Val_Loss,Val_Acc,Learning_Rate,Momentum\n")
+    with open(LOG_FILE, "w") as log:
+        log.write("Epoch,Train_Loss,Train_Acc,Val_Loss,Val_Acc,Learning_Rate,Momentum\n")
 
     for epoch in range(NUM_EPOCHS):
         epoch_start = time.time()
 
-        train_loss, train_acc, scaler = train_one_epoch(model, train_loader, optimizer, criterion, DEVICE, scheduler, scaler,use_mixup_fn= False,num_classes=num_classes)
-        val_loss, val_acc = validate(model, val_loader, criterion, DEVICE,num_classes=num_classes)
+        train_loss, train_acc, scaler = train_one_epoch(model, train_loader, optimizer, criterion, DEVICE, scheduler, scaler)
+        val_loss, val_acc = validate(model, val_loader, criterion, DEVICE)
 
         current_lr = scheduler.get_last_lr()[0] if scheduler else use_lr
         current_mom = optimizer.param_groups[0].get("momentum", None)
@@ -337,18 +316,13 @@ def main():
             best_acc = val_acc
             torch.save(model.state_dict(), SAVE_BEST)
             print(f"New Best Accuracy: {best_acc*100:.2f}% (saved as {SAVE_BEST})\033[0m")
-            with open(LOG_FILE, "a") as log:
-                log.write(f"New Best Accuracy: {best_acc*100:.2f}% (saved as {SAVE_BEST})\033[0m")
 
         torch.save(model.state_dict(), SAVE_LAST)
 
         # ---- LOG ----
         with open(LOG_FILE, "a") as log:
             log.write(
-                # f"{train_loss:.4f},{train_acc:.4f},{val_loss:.4f},{val_acc:.4f},{current_lr:.6f},{current_mom:.4f}\n"
-                f"[Epoch {epoch+1:03}/{NUM_EPOCHS}] | ⏱️ {epoch_time/60:.2f}m | "
-                f"LR: {current_lr:.6f} | Train Acc: {train_acc*100:.2f}% | Train Loss: {train_loss:.4f} | Val Acc: {val_acc*100:.2f}% | Val Loss: {val_loss:.4f} | "
-                f"Momentum: {current_mom:.4f} \n"
+                f"{epoch+1},{train_loss:.4f},{train_acc:.4f},{val_loss:.4f},{val_acc:.4f},{current_lr:.6f},{current_mom:.4f}\n"
             )
 
         # ---- DYNAMIC PLOTS ----

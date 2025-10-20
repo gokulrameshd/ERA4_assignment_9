@@ -1,0 +1,65 @@
+# Ignore images
+*.jpg
+*.png
+*.jpeg
+*.gif
+*.bmp
+*.tiff
+*.ico
+*.webp
+*.svg
+*.heic
+*.heif
+*.heif
+*.JPEG 
+
+# Ignore CSV files
+*.csv
+*.txt
+*.log
+*.json
+*.yaml
+*.yml
+*.jsonl
+*.jsonl.gz
+*.jsonl.bz2
+*.jsonl.xz
+
+# Ignore weights files  
+*.pth
+*.pt
+*.pkl
+*.pkl.gz
+*.pkl.bz2
+*.pkl.xz
+
+# Ignore logs files
+*.log
+*.log.gz
+*.log.bz2
+*.log.xz
+
+# Ignore checkpoint files
+*.ckpt
+*.ckpt.gz
+*.ckpt.bz2
+*.ckpt.xz
+
+# Ignore tensorboard files
+*.tfevents*
+*.tfevents.*
+*.tfevents.*.*
+*.tfevents.*.*.*    
+
+# Ignore pycache files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.pyw
+*.pyz
+*.pywz
+*.pyzw
+*.pyzwz
+*.pyzwzw
+
