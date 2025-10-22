@@ -35,16 +35,17 @@ from train_test_modules import mixup_criterion
 # ==============================================================
 # ⚙️ CONFIG
 # ==============================================================
-DATA_DIR = "./data"
+DATA_DIR = "./sample_data"
 BATCH_SIZE = 256
 IMG_SIZE = 224
-NUM_EPOCHS = 25
+NUM_EPOCHS = 30
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-SAVE_BEST = "./train/best_weights.pth"
-SAVE_LAST = "./train/last_weights.pth"
-LOG_FILE = "./train/training_log.txt"
-PLOTS_DIR = "./train/plots"
-
+SAVE_BEST = "./standard_train/best_weights.pth"
+SAVE_LAST = "./standard_train/last_weights.pth"
+CSV_LOG_FILE = "./standard_train/training_log.csv"
+TXT_LOG_FILE = "./standard_train/training_log.txt"
+PLOTS_DIR = "./standard_train/plots"
+USE_MIXUP = True
 os.makedirs(PLOTS_DIR, exist_ok=True)
 
 # Performance flags
@@ -97,15 +98,15 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device, scheduler=N
         # Forward (autocast for GPU only)
         with autocast(device_type=device_type, dtype=torch.float16 if device_type == "cuda" else torch.float32):
             if use_mixup_fn == True:
-                print("Using Mixup")
+                # print("Using Mixup")
                 mixup_fn = get_mixup_fn(mixup_alpha=0.2, cutmix_alpha=1.0, mixup_prob=1.0, label_smoothing=0.1, num_classes=num_classes)
                 if "Mixup" in str(type(mixup_fn)):
-                    print("Using Mixup timm interface")
+                    # print("Using Mixup timm interface")
                     inputs, targets = mixup_fn(inputs, labels)
                     outputs = model(inputs)
                     loss = criterion(outputs, targets)
                 else:
-                    print("Using Mixup custom interface")
+                    # print("Using Mixup custom interface")
                     # SimpleMixup fallback
                     inputs, y_a, y_b, lam = mixup_fn(inputs, labels)
                     outputs = model(inputs)
@@ -116,22 +117,16 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device, scheduler=N
 
         optimizer.zero_grad(set_to_none=True)
 
-        # # Forward (autocast for GPU only)
-        # with autocast(device_type=device_type, dtype=torch.float16 if device_type == "cuda" else torch.float32):
-        #     outputs = model(inputs)
-        #     if use_mixup_fn == True:
-        #         loss = mixup_criterion(criterion, outputs, labels)
-        #     else:
-        #         loss = criterion(outputs, labels)
-
         # Backward + optimizer step (with GradScaler)
         scaler.scale(loss).backward()
+        
         scaler.step(optimizer)
         scaler.update()
-
         # scheduler.step per batch (OneCycleLR expects per-step)
         if scheduler:
             scheduler.step()
+
+
 
         total_loss += float(loss.detach().cpu().item()) * inputs.size(0)
         _, preds = outputs.max(1)
@@ -251,30 +246,31 @@ def main():
     # Use a small temp optimizer copy and model copy to run LR finder without altering original optimizer
     # We use the model and optimizer provided (lr_finder will cache & reset)
 
-    lr_finder = LRFinder(model, optimizer, criterion, device=DEVICE, cache_dir=PLOTS_DIR)
-    lr_finder.range_test(train_loader, start_lr=1e-6, end_lr=10, num_iter=100)
+    # lr_finder = LRFinder(model, optimizer, criterion, device=DEVICE, cache_dir=PLOTS_DIR)
+    # lr_finder.range_test(train_loader, start_lr=1e-6, end_lr=10, num_iter=100)
 
-    # # Plot and get LR suggestions (plot returns suggested_lr, safe_lr)
-    best_lr, safe_lr = lr_finder.plot(
-        save_path=os.path.join(PLOTS_DIR, "lr_finder_plot.png"),
-        save_csv=True,
-        suggest=True,
-        annotate=True
-    )
-    # best_lr, safe_lr = run_lr_finder(model, optimizer, criterion, train_loader, 
-    #                                  device=DEVICE, start_lr=1e-6, end_lr=10, num_iter=100, 
-    #                                  cache_dir=PLOTS_DIR, use_amp=True)
-    # Fallback if LR finder fails
-    if best_lr is None or not math.isfinite(best_lr) or best_lr <= 0:
-        print("LR Finder returned invalid value. Falling back to 1e-3.")
-        best_lr, safe_lr = 1e-3, 1e-3 * 0.3
+    # # # Plot and get LR suggestions (plot returns suggested_lr, safe_lr)
+    # best_lr, safe_lr = lr_finder.plot(
+    #     save_path=os.path.join(PLOTS_DIR, "lr_finder_plot.png"),
+    #     save_csv=True,
+    #     suggest=True,
+    #     annotate=True
+    # )
+    # # best_lr, safe_lr = run_lr_finder(model, optimizer, criterion, train_loader, 
+    # #                                  device=DEVICE, start_lr=1e-6, end_lr=10, num_iter=100, 
+    # #                                  cache_dir=PLOTS_DIR, use_amp=True)
+    # # Fallback if LR finder fails
+    # if best_lr is None or not math.isfinite(best_lr) or best_lr <= 0:
+    #     print("LR Finder returned invalid value. Falling back to 1e-3.")
+    #     best_lr, safe_lr = 1e-3, 1e-3 * 0.3
 
-    print(f"\nRaw Suggested LR: {best_lr:.6f}")
-    print(f"Safe Max LR for OneCycleLR: {safe_lr:.6f}")
+    # print(f"\nRaw Suggested LR: {best_lr:.6f}")
+    # print(f"Safe Max LR for OneCycleLR: {safe_lr:.6f}")
 
-    # Clamp LR to safe bounds
-    lr_floor, lr_ceiling = 1e-6, 0.1
-    use_lr = float(max(lr_floor, min(safe_lr, lr_ceiling)))
+    # # Clamp LR to safe bounds
+    # lr_floor, lr_ceiling = 1e-6, 0.1
+    # use_lr = float(max(lr_floor, min(safe_lr, lr_ceiling)))
+    use_lr = 0.1 #Hardcoded for now comment this out to use the LR finder
     print(f"Final Selected LR → {use_lr:.6f}")
 
     # -----------------------------------------------------------
@@ -304,15 +300,15 @@ def main():
     # -----------------------------------------------------------
     # 📊 Training Loop
     best_acc = 0.0
-    history = {"train_loss": [], "val_loss": [], "train_acc": [], "val_acc": [], "lr": [], "mom": []}
+    history = {"train_loss": [], "val_loss": [], "train_acc": [], "val_acc": [], "lr": [], "mom": [] , "train_time": []}
 
-    # with open(LOG_FILE, "w") as log:
-    #     log.write("Epoch,Train_Loss,Train_Acc,Val_Loss,Val_Acc,Learning_Rate,Momentum\n")
-
+    with open(CSV_LOG_FILE, "w") as log:
+        log.write("Epoch,Train_Loss,Train_Acc,Val_Loss,Val_Acc,Learning_Rate,Momentum \n")
+    train_start_time = time.time()
     for epoch in range(NUM_EPOCHS):
         epoch_start = time.time()
 
-        train_loss, train_acc, scaler = train_one_epoch(model, train_loader, optimizer, criterion, DEVICE, scheduler, scaler,use_mixup_fn= False,num_classes=num_classes)
+        train_loss, train_acc, scaler = train_one_epoch(model, train_loader, optimizer, criterion, DEVICE, scheduler, scaler,use_mixup_fn= USE_MIXUP,num_classes=num_classes)
         val_loss, val_acc = validate(model, val_loader, criterion, DEVICE,num_classes=num_classes)
 
         current_lr = scheduler.get_last_lr()[0] if scheduler else use_lr
@@ -326,7 +322,8 @@ def main():
         history["mom"].append(current_mom)
 
         epoch_time = time.time() - epoch_start
-
+        total_train_time = time.time() - train_start_time
+        history["train_time"].append(total_train_time)
         print(
             f"[Epoch {epoch+1:03}/{NUM_EPOCHS}] | ⏱️ {epoch_time/60:.2f}m | "
             f"LR: {current_lr:.6f} | Train Acc: {train_acc*100:.2f}% | Val Acc: {val_acc*100:.2f}%"
@@ -337,28 +334,30 @@ def main():
             best_acc = val_acc
             torch.save(model.state_dict(), SAVE_BEST)
             print(f"New Best Accuracy: {best_acc*100:.2f}% (saved as {SAVE_BEST})\033[0m")
-            with open(LOG_FILE, "a") as log:
-                log.write(f"New Best Accuracy: {best_acc*100:.2f}% (saved as {SAVE_BEST})\033[0m")
+            with open(TXT_LOG_FILE, "a") as log:
+                log.write(f"New Best Accuracy: {best_acc*100:.2f}% (saved as {SAVE_BEST})\033[0m \n")
 
         torch.save(model.state_dict(), SAVE_LAST)
 
         # ---- LOG ----
-        with open(LOG_FILE, "a") as log:
+        with open(TXT_LOG_FILE, "a") as log:
             log.write(
                 # f"{train_loss:.4f},{train_acc:.4f},{val_loss:.4f},{val_acc:.4f},{current_lr:.6f},{current_mom:.4f}\n"
                 f"[Epoch {epoch+1:03}/{NUM_EPOCHS}] | ⏱️ {epoch_time/60:.2f}m | "
                 f"LR: {current_lr:.6f} | Train Acc: {train_acc*100:.2f}% | Train Loss: {train_loss:.4f} | Val Acc: {val_acc*100:.2f}% | Val Loss: {val_loss:.4f} | "
                 f"Momentum: {current_mom:.4f} \n"
             )
+        with open(CSV_LOG_FILE, "a") as log:
+            log.write(f"{epoch+1:03},{train_loss:.4f},{train_acc:.4f},{val_loss:.4f},{val_acc:.4f},{current_lr:.6f},{current_mom:.4f}\n")
 
         # ---- DYNAMIC PLOTS ----
         epochs_so_far = range(1, epoch + 2)
 
-        def save_plot(x, y_dict, title, ylabel, filename):
+        def save_plot(x, y_dict, title, xlabel, ylabel, filename):
             plt.figure(figsize=(8, 5))
             for label, y in y_dict.items():
                 plt.plot(x, y, marker='o', label=label)
-            plt.xlabel("Epoch")
+            plt.xlabel(xlabel)
             plt.ylabel(ylabel)
             plt.title(title)
             plt.legend()
@@ -367,17 +366,34 @@ def main():
             plt.savefig(os.path.join(PLOTS_DIR, filename))
             plt.close()
 
-        save_plot(epochs_so_far, {"Train Acc": history["train_acc"], "Val Acc": history["val_acc"]}, "Accuracy", "Accuracy", "accuracy_live.png")
-        save_plot(epochs_so_far, {"Train Loss": history["train_loss"], "Val Loss": history["val_loss"]}, "Loss", "Loss", "loss_live.png")
-        save_plot(epochs_so_far, {"Learning Rate": history["lr"]}, "Learning Rate", "LR", "lr_live.png")
-        save_plot(epochs_so_far, {"Momentum": history["mom"]}, "Momentum", "Momentum", "momentum_live.png")
+        save_plot(epochs_so_far, {"Train Acc": history["train_acc"], "Val Acc": history["val_acc"]}, "Accuracy", "Epoch", "Accuracy", "accuracy_live.png")
+        save_plot(epochs_so_far, {"Train Loss": history["train_loss"], "Val Loss": history["val_loss"]}, "Loss", "Epoch", "Loss", "loss_live.png")
+        save_plot(epochs_so_far, {"Learning Rate": history["lr"]}, "Learning Rate", "Epoch", "LR", "lr_live.png")
+        save_plot(epochs_so_far, {"Momentum": history["mom"]}, "Momentum", "Epoch", "Momentum", "momentum_live.png")
+        #plot train time vs accuracy
+        
+        save_plot(history["train_time"], {"Train Acc": history["train_acc"], "Val Acc": history["val_acc"]}, "Accuracy", "Time(s)", "Accuracy", "accuracy_time.png")
+        save_plot(history["train_time"], {"Train Loss": history["train_loss"], "Val Loss": history["val_loss"]}, "Loss", "Time(s)", "Loss", "loss_time.png")
+
+
+    train_end_time = time.time()
+    train_time = train_end_time - train_start_time
+    print(f"🏁 Training Complete — Best Val Acc: {best_acc*100:.2f}%")
 
     # -----------------------------------------------------------
     print(f"\n🏁 Training Complete — Best Val Acc: {best_acc*100:.2f}%")
     print(f"✅ Best model: {SAVE_BEST}")
     print(f"✅ Last model: {SAVE_LAST}")
     print(f"🖼️ Live plots in: {PLOTS_DIR}")
-
+    print(f"🏁 Training Time: {train_time/60:.2f}m")
+    with open(TXT_LOG_FILE, "a") as log:
+        log.write(
+            f"🏁 Training Complete — Best Val Acc: {best_acc*100:.2f}%\n"
+            f"✅ Best model: {SAVE_BEST}\n"
+            f"✅ Last model: {SAVE_LAST}\n"
+            f"🖼️ Live plots in: {PLOTS_DIR}\n"
+            f"🏁 Training Time: {train_time/60:.2f}m\n"
+        )
 
 if __name__ == "__main__":
     main()

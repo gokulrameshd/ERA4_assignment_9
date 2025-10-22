@@ -95,17 +95,20 @@ Model: create_finetuned_model(weights_path="./best_weights.pth")
 ---
 
 ### 3. **Progressive Resizing** (`train_progessive_resizing.py`)
-**Purpose**: Multi-stage training with increasing image sizes
+**Purpose**: Advanced multi-stage training with dynamic image resizing
 
 **Key Features**:
 - ✅ **3-Stage Progressive Training**:
   - Stage 1: 56×56, batch_size=4096, 25 epochs
   - Stage 2: 112×112, batch_size=1024, 25 epochs  
   - Stage 3: 224×224, batch_size=256, 25 epochs
-- ✅ Automatic stage transitions
-- ✅ Weight transfer between stages
+- ✅ **ProgressiveResizeDataset**: Dynamic image resizing during training
+- ✅ **Base Transforms**: Modular transform system with GPU acceleration
+- ✅ **Smart Optimizer/Scheduler**: `make_optimizer_and_scheduler()` with batch-aware LR scaling
+- ✅ Automatic stage transitions with weight transfer
 - ✅ Optimized batch sizes per stage
-- ✅ Mixup/CutMix support
+- ✅ Mixup/CutMix support with timm integration
+- ✅ CSV logging for detailed analysis
 
 **Configuration**:
 ```python
@@ -114,12 +117,16 @@ stages = [
     {"img_size": 112, "batch_size": 1024, "epochs": 25},
     {"img_size": 224, "batch_size": 256, "epochs": 25}
 ]
+
+# Dynamic resize schedule
+resize_schedule = {sum(stage["epochs"] for stage in stages[:i]): stage["img_size"] 
+                   for i in range(len(stages))}
 ```
 
 **Best For**:
-- Large-scale training
-- Memory-constrained environments
+- Large-scale training with memory constraints
 - Faster convergence on large datasets
+- Research on progressive training techniques
 
 ---
 
@@ -138,6 +145,18 @@ else:
     transforms.Normalize()
 ```
 
+### **Modular Transform System**
+```python
+# Base transforms for reusability
+train_base_transforms, val_base_transforms = get_base_transforms()
+
+# Progressive resize dataset with dynamic sizing
+class ProgressiveResizeDataset(torch.utils.data.Dataset):
+    def __init__(self, root, base_transform, resize_schedule):
+        # resize_schedule: dict mapping epoch ranges → image sizes
+        # e.g. { (0,9): 128, (10,19): 160, (20,29): 224 }
+```
+
 ### **Mixup/CutMix Integration**
 ```python
 # Automatic Mixup/CutMix with timm integration
@@ -147,6 +166,12 @@ mixup_fn = get_mixup_fn(
     mixup_prob=1.0,
     label_smoothing=0.1
 )
+
+# Supports both timm.Mixup and custom SimpleMixup
+if _HAS_TIMM:
+    mixup_fn = Mixup(mixup_alpha=0.2, cutmix_alpha=1.0, ...)
+else:
+    mixup_fn = SimpleMixup(alpha=0.2, prob=1.0, ...)
 ```
 
 ### **Performance Optimizations**
@@ -155,6 +180,7 @@ mixup_fn = get_mixup_fn(
 - **Prefetch Factor**: 4x batch prefetching
 - **Drop Last**: Safe for Mixup operations
 - **Worker Optimization**: Auto-scaling based on CPU cores
+- **Dynamic Resizing**: Efficient memory usage with progressive sizing
 
 ---
 
@@ -190,11 +216,11 @@ python train_progessive_resizing.py
 
 ### **Training Speed Comparison**
 
-| Strategy | Batch Size | Image Size | Epochs | Memory Usage | Speed |
-|----------|------------|------------|--------|--------------|-------|
-| Standard | 256 | 224×224 | 25 | ~8GB | Baseline |
-| Fine-tuning | 1024 | 224×224 | 50 | ~12GB | 2x faster |
-| Progressive | 4096→256 | 56→224 | 75 total | ~16GB peak | 3x faster |
+| Strategy | Batch Size | Image Size | Epochs | Memory Usage | Speed | Key Features |
+|----------|------------|------------|--------|--------------|-------|--------------|
+| Standard | 256 | 224×224 | 25 | ~8GB | Baseline | LR Finder, AMP |
+| Fine-tuning | 1024 | 224×224 | 50 | ~12GB | 2x faster | Transfer Learning |
+| Progressive | 4096→256 | 56→224 | 75 total | ~16GB peak | 3x faster | Dynamic Resizing, CSV Logging |
 
 ### **Convergence Analysis**
 
@@ -218,6 +244,8 @@ python train_progessive_resizing.py
 - **Per-Step Updates**: Optimized for OneCycleLR
 - **Momentum Cycling**: Automatic momentum adjustment
 - **Stage-Aware**: Different LR schedules per progressive stage
+- **Smart Optimizer/Scheduler**: `make_optimizer_and_scheduler()` with batch-aware LR scaling
+- **Linear LR Scaling**: `base_lr = min(0.1 * (batch_size / 256), 0.4)`
 
 ### **Mixed Precision Training**
 ```python
@@ -237,6 +265,30 @@ try:
     print("⚡ Model compiled with torch.compile()")
 except Exception:
     pass
+```
+
+### **Advanced Scheduler Features**
+```python
+# Smart optimizer and scheduler creation
+def make_optimizer_and_scheduler(model, batch_size, epochs, steps_per_epoch):
+    base_lr = min(0.1 * (batch_size / 256), 0.4)  # Linear LR scaling rule
+    optimizer = SGD(model.parameters(), lr=base_lr, momentum=0.9, weight_decay=1e-4)
+    scheduler = OneCycleLR(optimizer, max_lr=base_lr, ...)
+    return optimizer, scheduler
+```
+
+### **Progressive Resize Dataset**
+```python
+# Dynamic image resizing during training
+class ProgressiveResizeDataset(torch.utils.data.Dataset):
+    def __init__(self, root, base_transform, resize_schedule):
+        # Automatically resizes images based on current epoch
+        # resize_schedule: {0: 56, 25: 112, 50: 224}
+        
+    def __getitem__(self, idx):
+        # Returns image resized to current stage size
+        current_size = self.get_current_size()
+        return self.resize_and_transform(image, current_size)
 ```
 
 ---
@@ -385,7 +437,8 @@ This project is licensed under the MIT License.
 
 ---
 
-*Last Updated: October 2025*  
-*Version: 3.0*  
+*Last Updated: December 2024*  
+*Version: 4.0*  
 *Total Strategies: 3*  
+*Advanced Features: ProgressiveResizeDataset, Smart Scheduler, CSV Logging*  
 *Best Performance: Progressive Resizing (88% accuracy)*
