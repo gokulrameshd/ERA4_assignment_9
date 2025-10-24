@@ -254,3 +254,13 @@ def make_loader(dataset, img_size, batch_size, is_train=True, num_workers=8,tran
         persistent_workers=True,
         prefetch_factor=2,
     )
+
+def set_seed(seed: int = 42):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    # keep deterministic=False for speed (ImageNet)
+    torch.backends.cudnn.deterministic = False
+    torch.backends.cudnn.benchmark = True

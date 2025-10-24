@@ -9,6 +9,10 @@ import matplotlib.pyplot as plt
 from torchsummary import summary
 import os
 import numpy as np
+import time
+from torch.cuda.amp import  GradScaler #autocast, old version 1.11.0
+from data_loader import get_mixup_fn
+from torch import autocast #new version 2.5.0
 # Let's visualize some of the images
 
 
@@ -287,6 +291,206 @@ def training_loop_with_scaler_cutmix_mixup(model, device, train_loader, test_loa
     print(f"Training complete. Best accuracy: {best_acc:.2f}%")
     return train_losses, test_losses, train_accuracies, test_accuracies, Learning_Rates, best_accuracies 
 
+
+def format_mem(bytes_val):
+    """Convert bytes to readable MB/GB format."""
+    if bytes_val < 1024**2:
+        return f"{bytes_val/1024:.1f} KB"
+    elif bytes_val < 1024**3:
+        return f"{bytes_val/1024**2:.1f} MB"
+    return f"{bytes_val/1024**3:.2f} GB"
+
+# ==============================================================
+# ⚡ Optimized Training & Validation Loops (AMP + non-blocking)
+# ==============================================================
+def train_one_epoch_imagenet(
+    model,
+    dataloader,
+    optimizer,
+    criterion,
+    device,
+    scheduler=None,
+    scaler=None,
+    mixup_fn=None,
+    num_classes=1000,
+):
+    model.train()
+    total_loss, correct, total = 0.0, 0, 0
+    start_time = time.time()
+
+        # Safer device detection
+    device_type = "cuda" if "cuda" in str(device) else "cpu"
+
+    # AMP scaler (initialize if not provided)
+    if scaler is None:
+        scaler = GradScaler(device=device_type)
+
+    pbar = tqdm(
+        enumerate(dataloader),
+        total=len(dataloader),
+        desc="\033[92m🟢 Training\033[0m",
+        leave=False,
+        ncols=120
+    )
+
+    for batch_idx, (inputs, labels) in pbar:
+        inputs = inputs.to(device, non_blocking=True)
+        labels = labels.to(device, non_blocking=True)
+
+        optimizer.zero_grad(set_to_none=True)
+
+        # AMP autocast context — prefer bfloat16 if supported
+        # with autocast(device_type=device_type, dtype=torch.float16 if device_type == "cuda" else torch.float32):
+        with autocast(
+            device_type=device_type,
+            dtype=(
+                torch.bfloat16
+                if torch.cuda.is_bf16_supported()
+                else torch.float16),
+                    ):
+            if mixup_fn is not None:
+                mixed = mixup_fn(inputs, labels)
+                if isinstance(mixed, tuple) and len(mixed) == 4:
+                    # Custom SimpleMixup interface
+                    inputs, y_a, y_b, lam = mixed
+                    outputs = model(inputs)
+                    loss = mixup_criterion(criterion, outputs, y_a, y_b, lam)
+                else:
+                    # timm-style Mixup interface
+                    inputs, targets = mixed
+                    outputs = model(inputs)
+                    loss = criterion(outputs, targets)
+            else:
+                outputs = model(inputs)
+                loss = criterion(outputs, labels)
+
+        
+         # Backward + optimizer step Backward pass (scaled)
+        scaler.scale(loss).backward()
+        # ✅ UNscale before clipping
+        scaler.unscale_(optimizer)
+        # ✅ Apply gradient clipping (L2 norm)
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        # Optimizer + scaler steps
+        scaler.step(optimizer)
+        scaler.update()
+
+        # Handle scheduler per-iteration (OneCycleLR etc.)
+        if scheduler and isinstance(
+            scheduler, torch.optim.lr_scheduler.OneCycleLR
+        ):
+            scheduler.step()
+
+
+        # Track metrics
+        # total_loss += float(loss.detach().cpu().item()) * inputs.size(0)
+        total_loss += loss.item() * inputs.size(0)
+        _, preds = outputs.max(1)
+        correct += int(preds.eq(labels).sum().item())
+        total += labels.size(0)
+
+        # Update tqdm less frequently to reduce overhead
+        if (batch_idx + 1) % 20 == 0 or (batch_idx + 1) == len(dataloader):
+            avg_loss = total_loss / total
+            acc = 100.0 * correct / total
+            mem_alloc = (
+                # format_mem(torch.cuda.memory_allocated(device))
+                f"{torch.cuda.memory_allocated(device) / 1e9:.2f} GB"
+                if torch.cuda.is_available()
+                else "N/A"
+            )
+
+            elapsed = time.time() - start_time
+            iters_done = batch_idx + 1
+            iters_left = len(dataloader) - iters_done
+            # eta = iters_left * (elapsed / max(1, iters_done))
+            eta = (len(dataloader) - iters_done) * (elapsed / max(1, iters_done))
+            pbar.set_postfix({
+                "Loss": f"{avg_loss:.4f}",
+                "Acc": f"{acc:.2f}%",
+                "Mem": {mem_alloc},
+                "ETA": f"{eta/60:.1f}m"
+            })
+
+    # Epoch-end scheduler (for StepLR, CosineLR, etc.)
+    if scheduler and not isinstance(scheduler, torch.optim.lr_scheduler.OneCycleLR):
+        scheduler.step()
+
+    return {
+        "loss": total_loss / total,
+        "acc": correct / total,
+        "scaler": scaler,
+        "time": (time.time() - start_time)/60,
+    }
+
+@torch.no_grad()
+def validate_imagenet(model, dataloader, criterion, device,num_classes=1000):
+    model.eval()
+    total_loss, correct, total = 0.0, 0, 0
+    start_time = time.time()
+
+    # Safer device detection
+    device_type = "cuda" if "cuda" in str(device) else "cpu"
+
+
+    pbar = tqdm(
+        enumerate(dataloader),
+        total=len(dataloader),
+        desc="\033[94m🔵 Validating\033[0m",
+        leave=False,
+        ncols=120
+    )
+
+    # with torch.no_grad():
+    for batch_idx, (inputs, labels) in pbar:
+        inputs = inputs.to(device, non_blocking=True)
+        labels = labels.to(device, non_blocking=True)
+
+        # use autocast for faster inference on GPU
+        # with autocast(device_type=device_type, dtype=torch.float16 if device_type == "cuda" else torch.float32):
+        with autocast(device_type=device_type,
+                    dtype=(torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16),):
+
+            outputs = model(inputs)
+            loss = criterion(outputs, labels)
+
+        # total_loss += float(loss.detach().cpu().item()) * inputs.size(0)
+        total_loss += loss.item() * inputs.size(0)
+        _, preds = outputs.max(1)
+        correct += int(preds.eq(labels).sum().item())
+        total += labels.size(0)
+
+        if (batch_idx + 1) % 10 == 0 or (batch_idx + 1) == len(dataloader):
+            avg_loss = total_loss / total
+            acc = 100.0 * correct / total
+            mem_alloc = (
+                # format_mem(torch.cuda.memory_allocated(device))
+                f"{torch.cuda.memory_allocated(device) / 1e9:.2f} GB"
+                if torch.cuda.is_available()
+                else "N/A"
+            )
+
+            elapsed = time.time() - start_time
+            # iters_done = batch_idx + 1
+            # iters_left = len(dataloader) - iters_done
+            # eta = iters_left * (elapsed / max(1, iters_done))
+            eta = (len(dataloader) - (batch_idx + 1)) * (
+                elapsed / max(1, (batch_idx + 1))
+            )
+            pbar.set_postfix({
+                "Loss": f"{avg_loss:.4f}",
+                "Acc": f"{acc:.2f}%",
+                "Mem": {mem_alloc},
+                "ETA": f"{eta/60:.1f}m"
+            })
+
+    return {
+    "loss": total_loss / total,
+    "acc": correct / total,
+    "time": (time.time() - start_time)/60,
+    }
+
+
 def train_test_with_scheduler(model, device, train_loader, test_loader, optimizer, criterion, scheduler, epochs,save_path="./checkpoints/best_model.pth"):
     best_acc = 0
     train_losses = []
@@ -327,10 +531,65 @@ def plot_losses(train_losses, test_losses, train_accuracies, test_accuracies):
 
     plt.show()
 
+def save_plot(x, y_dict, title, xlabel, ylabel, filename,plots_dir):
+    plt.figure(figsize=(8, 5))
+    for label, y in y_dict.items():
+        plt.plot(x, y, marker='o', label=label)
+    plt.xlabel(xlabel)
+    plt.ylabel(ylabel)
+    plt.title(title)
+    plt.legend()
+    plt.grid(True, linestyle="--", alpha=0.7)
+    plt.tight_layout()
+    plt.savefig(os.path.join(plots_dir, filename))
+    plt.close()
+
 def get_model_summary(model):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = model.to(device)
     return summary(model, input_size=(1, 28, 28))
+
+
+def save_checkpoint(epoch, model, optimizer, scheduler, scaler, best_acc, history, path="checkpoint.pth"):
+    state = {
+        "epoch": epoch,
+        "model_state": model.state_dict(),
+        "optimizer_state": optimizer.state_dict(),
+        "scheduler_state": scheduler.state_dict() if scheduler else None,
+        "scaler_state": scaler.state_dict() if scaler else None,
+        "best_acc": best_acc,
+        "history": history,  # 👈 Save your plots' history too
+    }
+    torch.save(state, path)
+    print(f"✅ Checkpoint saved at {path} (epoch {epoch})")
+
+
+def load_checkpoint(path, model, optimizer=None, scheduler=None, scaler=None, device="cuda"):
+    if not os.path.exists(path):
+        print(f"⚠️ No checkpoint found at {path}")
+        return 0, 0.0  # start fresh
+
+    checkpoint = torch.load(path, map_location=device)
+    model.load_state_dict(checkpoint["model_state"])
+    print(f"✅ Model weights loaded from {path}")
+
+    if optimizer and "optimizer_state" in checkpoint and checkpoint["optimizer_state"]:
+        optimizer.load_state_dict(checkpoint["optimizer_state"])
+        print("✅ Optimizer state restored")
+
+    if scheduler and "scheduler_state" in checkpoint and checkpoint["scheduler_state"]:
+        scheduler.load_state_dict(checkpoint["scheduler_state"])
+        print("✅ Scheduler state restored")
+
+    if scaler and "scaler_state" in checkpoint and checkpoint["scaler_state"]:
+        scaler.load_state_dict(checkpoint["scaler_state"])
+        print("✅ GradScaler state restored")
+
+    start_epoch = checkpoint.get("epoch", 0) + 1
+    best_acc = checkpoint.get("best_acc", 0.0)
+    history = checkpoint.get("history", {"train_loss": [], "val_loss": [], "train_acc": [], "val_acc": [], "lr": [], "mom": [], "train_time": [], "val_time": []})
+    print(f"🔁 Resuming from epoch {start_epoch} (best acc: {best_acc:.2f}%)")
+    return start_epoch, best_acc, history
 
 
 
