@@ -17,6 +17,7 @@ def create_model(num_classes, pretrained=False):
     model = models.resnet50(weights=weights)
     model.avgpool = nn.AdaptiveAvgPool2d((1, 1))
     model.fc = nn.Linear(model.fc.in_features, num_classes)
+    model.num_classes = num_classes
     return model
 
 def create_finetuned_model(num_classes, weights_path="./best_weights.pth"):

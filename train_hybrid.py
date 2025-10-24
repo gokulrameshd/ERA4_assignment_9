@@ -38,11 +38,11 @@ BATCH_SIZE = 512
 IMG_SIZE = 224
 NUM_EPOCHS = 30
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-SAVE_BEST = "./standard_train/best_weights.pth"
-SAVE_LAST = "./standard_train/last_weights.pth"
-CSV_LOG_FILE = "./standard_train/training_log.csv"
-TXT_LOG_FILE = "./standard_train/training_log.txt"
-PLOTS_DIR = "./standard_train/plots"
+SAVE_BEST = "./hydrid_train/best_weights.pth"
+SAVE_LAST = "./hydrid_train/last_weights.pth"
+CSV_LOG_FILE = "./hydrid_train/training_log.csv"
+TXT_LOG_FILE = "./hydrid_train/training_log.txt"
+PLOTS_DIR = "./hydrid_train/plots"
 USE_MIXUP = True
 ENABLE_LR_FINDER = False
 SAVE_FREQ_LAST = 5   # only overwrite last_weights every N epochs (reduce IO)
@@ -79,10 +79,27 @@ def main():
 
     print(f"\n🚀 Training started at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} on {DEVICE}")
 
-    # -----------------------------------------------------------
-    # 📦 Data
-    # train_loader, val_loader, num_classes = get_dataloaders(DATA_DIR, BATCH_SIZE, IMG_SIZE)
-    train_loader, val_loader, num_classes = get_loaders(IMG_SIZE, BATCH_SIZE)
+    # ============================================================
+    # ⚙️ Progressive Stage Configurations
+    # ============================================================
+    TRAIN_STAGES = [
+        {"fraction": 0.5, "img_size": 128, "batch_size": 1024, "epochs": 12},
+        {"fraction": 1.0, "img_size": 224, "batch_size": 512, "epochs": 18},
+    ]
+    TOTAL_EPOCHS = sum(stage["epochs"] for stage in TRAIN_STAGES)
+
+    # ============================================================
+    # 🧠 Initial Data (Stage 1)
+    # ============================================================
+    current_stage = 0
+    stage_cfg = TRAIN_STAGES[current_stage]
+    print(f"\n📦 Stage 1 — {int(stage_cfg['fraction']*100)}% data | {stage_cfg['img_size']}px | batch={stage_cfg['batch_size']}")
+
+    train_loader, val_loader, num_classes = get_dataloaders(
+        DATA_DIR, stage_cfg["batch_size"], stage_cfg["img_size"], fraction=stage_cfg["fraction"]
+    )
+
+
     # -----------------------------------------------------------
     # 🧠 Model setup
     model = create_model(num_classes=num_classes, pretrained=False).to(DEVICE)
@@ -145,7 +162,8 @@ def main():
     
     mixup_fn = None
     if USE_MIXUP:
-        mixup_fn = get_mixup_fn(mixup_alpha=0.2, cutmix_alpha=1.0, mixup_prob=1.0, label_smoothing=0.1, num_classes=num_classes)
+        mixup_fn = get_mixup_fn(mixup_alpha=0.2, cutmix_alpha=1.0, mixup_prob=1.0, 
+                                label_smoothing=0.1, num_classes=num_classes)
         criterion = nn.CrossEntropyLoss()
     else:
         criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
@@ -200,24 +218,63 @@ def main():
     with open(CSV_LOG_FILE, "w") as log:
         log.write("Epoch,Train_Loss,Train_Acc,Train_Time,Val_Loss,Val_Acc,Val_Time,Learning_Rate,Momentum \n")
     start_time = time.time()
+
+    # ============================================================
+    # 🧠 TRAINING LOOP (Hybrid Progressive)
+    # ============================================================
     for epoch in range(start_epoch, NUM_EPOCHS):
 
+        # ---------------------------------------
+        # Stage Transition Check
+        # ---------------------------------------
+        if current_stage < len(TRAIN_STAGES) - 1:
+            stage_end = sum(s["epochs"] for s in TRAIN_STAGES[:current_stage + 1])
+            if epoch == stage_end:
+                current_stage += 1
+                stage_cfg = TRAIN_STAGES[current_stage]
+                print(f"\n📈 Switching to Stage {current_stage + 1} → "
+                      f"{int(stage_cfg['fraction']*100)}% data | {stage_cfg['img_size']}px | batch={stage_cfg['batch_size']}")
 
+                train_loader, val_loader, _ = get_dataloaders(
+                    DATA_DIR, stage_cfg["batch_size"], stage_cfg["img_size"],
+                    fraction=stage_cfg["fraction"]
+                )
+                # Optional LR dampening
+                for g in optimizer.param_groups:
+                    g["lr"] *= 0.5
+
+                scheduler = create_onecycle_scheduler(
+                    optimizer, max_lr=g["lr"],
+                    train_loader_len=len(train_loader),
+                    epochs=TOTAL_EPOCHS - epoch
+                )
+        # ---------------------------------------
+        # 🏋️ Train
+        # ---------------------------------------
         train_results = train_one_epoch_imagenet(model, train_loader, optimizer, criterion, DEVICE,
-                        scheduler, scaler, mixup_fn=mixup_fn, enable_last_channel = ENABLE_CHANNEL_LAST,ema=ema,num_classes=num_classes)
+                                                scheduler, scaler, mixup_fn=mixup_fn, 
+                                                enable_last_channel = ENABLE_CHANNEL_LAST,
+                                                ema=ema,num_classes=num_classes)
         train_loss = train_results["loss"]
         train_acc = train_results["acc"]
         scaler = train_results["scaler"]
         
         train_time = train_results["time"]
+        # ---------------------------------------
+        # ✅ Validate
+        # ---------------------------------------
         val_model = ema.ema if ema is not None else model
         val_results = validate_imagenet(val_model, val_loader, criterion, DEVICE,  num_classes=num_classes)
         val_loss = val_results["loss"]
         val_acc = val_results["acc"]
         val_time = val_results["time"]
+        # ---------------------------------------
+        # Log stats
+        # ---------------------------------------
         current_lr = scheduler.get_last_lr()[0] if scheduler else use_lr
         current_mom = optimizer.param_groups[0].get("momentum", None)
         time_lapsed = (time.time() - start_time )/60
+
         history["train_loss"].append(train_loss)
         history["val_loss"].append(val_loss)
         history["train_acc"].append(train_acc)

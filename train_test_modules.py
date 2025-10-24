@@ -14,7 +14,7 @@ from torch.cuda.amp import  GradScaler #autocast, old version 1.11.0
 from data_loader import get_mixup_fn
 from torch import autocast #new version 2.5.0
 # Let's visualize some of the images
-
+import copy
 
 # ========================
 # CutMix / Mixup Utils
@@ -312,6 +312,8 @@ def train_one_epoch_imagenet(
     scheduler=None,
     scaler=None,
     mixup_fn=None,
+    enable_last_channel= False,
+    ema= None,
     num_classes=1000,
 ):
     model.train()
@@ -334,7 +336,10 @@ def train_one_epoch_imagenet(
     )
 
     for batch_idx, (inputs, labels) in pbar:
-        inputs = inputs.to(device, non_blocking=True)
+        if enable_last_channel:
+            inputs = inputs.to(device, non_blocking=True).to(memory_format=torch.channels_last)
+        else:
+            inputs = inputs.to(device, non_blocking=True)
         labels = labels.to(device, non_blocking=True)
 
         optimizer.zero_grad(set_to_none=True)
@@ -376,11 +381,15 @@ def train_one_epoch_imagenet(
         scaler.update()
 
         # Handle scheduler per-iteration (OneCycleLR etc.)
-        if scheduler and isinstance(
-            scheduler, torch.optim.lr_scheduler.OneCycleLR
-        ):
+        if scheduler and isinstance(scheduler, torch.optim.lr_scheduler.OneCycleLR):
             scheduler.step()
 
+        # EMA update
+        if ema is not None:
+            with torch.no_grad():
+                for ema_p, model_p in zip(ema.ema.parameters(), model.parameters()):
+                    if model_p.dtype.is_floating_point:
+                        ema_p.mul_(ema.decay).add_(model_p, alpha=1 - ema.decay)
 
         # Track metrics
         # total_loss += float(loss.detach().cpu().item()) * inputs.size(0)
@@ -592,6 +601,29 @@ def load_checkpoint(path, model, optimizer=None, scheduler=None, scaler=None, de
     return start_epoch, best_acc, history
 
 
+class ModelEMA:
+    """Maintains an exponential moving average (EMA) of model weights."""
+    def __init__(self, model, decay=0.999, model_fn=None):
+        self.decay = decay
+        device = next(model.parameters()).device
+
+        # Clone the model for EMA
+        if model_fn is not None:
+            self.ema = model_fn().to(device)
+        else:
+            # fallback: deep copy the model
+            self.ema = copy.deepcopy(model).to(device)
+
+        self.ema.eval()
+        for p in self.ema.parameters():
+            p.requires_grad_(False)
+
+    @torch.no_grad()
+    def update(self, model):
+        msd = model.state_dict()
+        for k, v in self.ema.state_dict().items():
+            if v.dtype.is_floating_point:
+                v.mul_(self.decay).add_(msd[k], alpha=1 - self.decay)
 
 
 

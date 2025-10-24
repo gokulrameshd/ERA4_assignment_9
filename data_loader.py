@@ -1,6 +1,6 @@
 import os
 import torch
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader,random_split
 from torchvision import datasets, transforms
 import random
 import numpy as np
@@ -69,13 +69,13 @@ def get_base_transforms():
 
 
 
-def get_dataloaders(data_dir="data", batch_size=128, img_size=224):
+def get_dataloaders(data_dir="data", batch_size=128, img_size=224, fraction=1.0):
     """Universal DataLoader setup.
     - Uses GPU transforms if torchvision v2 supports them
     - Falls back to CPU transforms otherwise
     """
 
-    num_workers = min(8, max(4, torch.get_num_threads() // 2))
+    num_workers = min(8, max(8, torch.get_num_threads() // 2))
     torch.backends.cudnn.benchmark = True
 
     # Try importing torchvision.v2 transforms
@@ -131,6 +131,11 @@ def get_dataloaders(data_dir="data", batch_size=128, img_size=224):
     # Create datasets and loaders
     train_dataset = datasets.ImageFolder(os.path.join(data_dir, "train"), train_transforms)
     val_dataset = datasets.ImageFolder(os.path.join(data_dir, "val"), val_transforms)
+    num_classes = len(train_dataset.classes)
+     # Fractional sampling
+    if fraction < 1.0:
+        subset_len = int(len(train_dataset) * fraction)
+        train_dataset, _ = random_split(train_dataset, [subset_len, len(train_dataset) - subset_len])
 
     train_loader = DataLoader(
         train_dataset,
@@ -154,7 +159,7 @@ def get_dataloaders(data_dir="data", batch_size=128, img_size=224):
         drop_last=False,   # safe with mixup
     )
 
-    num_classes = len(train_dataset.classes)
+    
     print(f"✅ Loaded dataset with {num_classes} classes using {num_workers} workers.")
     return train_loader, val_loader, num_classes
 
