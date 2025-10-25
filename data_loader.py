@@ -4,6 +4,7 @@ from torch.utils.data import DataLoader,random_split
 from torchvision import datasets, transforms
 import random
 import numpy as np
+from math import ceil
 import torch.nn.functional as F
 
 # Seed/worker init for reproducibility and better randomness in workers
@@ -129,13 +130,17 @@ def get_dataloaders(data_dir="data", batch_size=128, img_size=224, fraction=1.0)
         ])
 
     # Create datasets and loaders
-    train_dataset = datasets.ImageFolder(os.path.join(data_dir, "train"), train_transforms)
+    base_dataset = datasets.ImageFolder(os.path.join(data_dir, "train"), train_transforms)
     val_dataset = datasets.ImageFolder(os.path.join(data_dir, "val"), val_transforms)
-    num_classes = len(train_dataset.classes)
+    num_classes = len(base_dataset.classes)
      # Fractional sampling
+    
     if fraction < 1.0:
-        subset_len = int(len(train_dataset) * fraction)
-        train_dataset, _ = random_split(train_dataset, [subset_len, len(train_dataset) - subset_len])
+        subset_len = int(len(base_dataset) * fraction)
+        train_subset, _ = random_split(base_dataset, [subset_len, len(base_dataset) - subset_len])
+        train_dataset = train_subset
+    else:
+        train_dataset = base_dataset
 
     train_loader = DataLoader(
         train_dataset,
@@ -269,3 +274,7 @@ def set_seed(seed: int = 42):
     # keep deterministic=False for speed (ImageNet)
     torch.backends.cudnn.deterministic = False
     torch.backends.cudnn.benchmark = True
+
+def get_total_steps(data_dir, train_transforms =None, stages=None):
+    base_dataset = datasets.ImageFolder(os.path.join(data_dir, "train"), train_transforms)
+    return sum(ceil((stage["fraction"] * len(base_dataset)) / stage["batch_size"]) * stage["epochs"]for stage in stages)

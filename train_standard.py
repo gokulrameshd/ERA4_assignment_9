@@ -199,40 +199,27 @@ def main():
 
     with open(CSV_LOG_FILE, "w") as log:
         log.write("Epoch,Train_Loss,Train_Acc,Train_Time,Val_Loss,Val_Acc,Val_Time,Learning_Rate,Momentum \n")
-    start_time = time.time()
+    
     for epoch in range(start_epoch, NUM_EPOCHS):
-
-
+        start_time = time.time()
+        # ---------------------------------------
+        # 🏋️ Train
+        # ---------------------------------------
         train_results = train_one_epoch_imagenet(model, train_loader, optimizer, criterion, DEVICE,
                         scheduler, scaler, mixup_fn=mixup_fn, enable_last_channel = ENABLE_CHANNEL_LAST,ema=ema,num_classes=num_classes)
         train_loss = train_results["loss"]
         train_acc = train_results["acc"]
         scaler = train_results["scaler"]
-        
         train_time = train_results["time"]
+        # ---------------------------------------
+        # ✅ Validate
+        # ---------------------------------------
         val_model = ema.ema if ema is not None else model
         val_results = validate_imagenet(val_model, val_loader, criterion, DEVICE,  num_classes=num_classes)
         val_loss = val_results["loss"]
         val_acc = val_results["acc"]
         val_time = val_results["time"]
-        current_lr = scheduler.get_last_lr()[0] if scheduler else use_lr
-        current_mom = optimizer.param_groups[0].get("momentum", None)
-        time_lapsed = (time.time() - start_time )/60
-        history["train_loss"].append(train_loss)
-        history["val_loss"].append(val_loss)
-        history["train_acc"].append(train_acc)
-        history["val_acc"].append(val_acc)
-        history["lr"].append(current_lr)
-        history["mom"].append(current_mom)
-        history["time_lapsed"].append(time_lapsed)
-        history["train_time"].append(train_time)
-        history["val_time"].append(val_time)
-        print(
-            f"[Epoch {epoch+1:03}/{NUM_EPOCHS}] | ⏱️ {train_time:.2f}m | "
-            f"LR: {current_lr:.6f} | Train Acc: {train_acc*100:.2f}% | Val Acc: {val_acc*100:.2f}%"
-        )
-
-        # ---- SAVE MODELS ----
+         # ---- SAVE MODELS ----
         if val_acc > best_acc:
             best_acc = val_acc
             torch.save(model.state_dict(), SAVE_BEST)
@@ -245,6 +232,33 @@ def main():
         # torch.save(model.state_dict(), SAVE_LAST)
         save_checkpoint(epoch, model, optimizer, scheduler, scaler, best_acc, history,
                         path=SAVE_LAST)
+        # ---------------------------------------
+        # Log stats
+        # ---------------------------------------
+        current_lr = scheduler.get_last_lr()[0] if scheduler else use_lr
+        current_mom = optimizer.param_groups[0].get("momentum", None)
+        total_time_epoch = (time.time() - start_time )/60
+        try:
+            time_lapsed = history["time_lapsed"][-1] + total_time_epoch
+        except :
+            time_lapsed = total_time_epoch
+        history["train_loss"].append(train_loss)
+        history["val_loss"].append(val_loss)
+        history["train_acc"].append(train_acc)
+        history["val_acc"].append(val_acc)
+        history["lr"].append(current_lr)
+        history["mom"].append(current_mom)
+        history["time_lapsed"].append(time_lapsed)
+        history["train_time"].append(train_time)
+        history["val_time"].append(val_time)
+        history["total_time_epoch"].append(total_time_epoch)
+
+        print(
+            f"[Epoch {epoch+1:03}/{NUM_EPOCHS}] | ⏱️ {train_time:.2f}m | "
+            f"LR: {current_lr:.6f} | Train Acc: {train_acc*100:.2f}% | Val Acc: {val_acc*100:.2f}%"
+        )
+
+       
 
         # ---- LOG ----
         with open(TXT_LOG_FILE, "a") as log:
@@ -280,14 +294,14 @@ def main():
     print(f"✅ Best model: {SAVE_BEST}")
     print(f"✅ Last model: {SAVE_LAST}")
     print(f"🖼️ Live plots in: {PLOTS_DIR}")
-    print(f"🏁 Training Time: {train_time:.2f}m")
+    print(f"🏁 Training Time: {history["time_lapsed"][-1]:.2f}m")
     with open(TXT_LOG_FILE, "a") as log:
         log.write(
             f"🏁 Training Complete — Best Val Acc: {best_acc*100:.2f}%\n"
             f"✅ Best model: {SAVE_BEST}\n"
             f"✅ Last model: {SAVE_LAST}\n"
             f"🖼️ Live plots in: {PLOTS_DIR}\n"
-            f"🏁 Training Time: {train_time:.2f}m\n"
+            f"🏁 Training Time: {history["time_lapsed"][-1]:.2f}m\n"
         )
 
 if __name__ == "__main__":

@@ -382,8 +382,10 @@ def train_one_epoch_imagenet(
 
         # Handle scheduler per-iteration (OneCycleLR etc.)
         if scheduler and isinstance(scheduler, torch.optim.lr_scheduler.OneCycleLR):
-            scheduler.step()
-
+            if scheduler._step_count < scheduler.total_steps:
+                scheduler.step()
+            # else:
+            #     scheduler.step(epoch)
         # EMA update
         if ema is not None:
             with torch.no_grad():
@@ -543,7 +545,9 @@ def plot_losses(train_losses, test_losses, train_accuracies, test_accuracies):
 def save_plot(x, y_dict, title, xlabel, ylabel, filename,plots_dir):
     plt.figure(figsize=(8, 5))
     for label, y in y_dict.items():
-        plt.plot(x, y, marker='o', label=label)
+        # plt.plot(x, y, marker='o', label=label)
+        min_len = min(len(x), len(y))
+        plt.plot(x[:min_len], y[:min_len], marker='o', label=label)
     plt.xlabel(xlabel)
     plt.ylabel(ylabel)
     plt.title(title)
@@ -596,7 +600,8 @@ def load_checkpoint(path, model, optimizer=None, scheduler=None, scaler=None, de
 
     start_epoch = checkpoint.get("epoch", 0) + 1
     best_acc = checkpoint.get("best_acc", 0.0)
-    history = checkpoint.get("history", {"train_loss": [], "val_loss": [], "train_acc": [], "val_acc": [], "lr": [], "mom": [], "train_time": [], "val_time": []})
+    history = checkpoint.get("history", {"train_loss": [], "val_loss": [], "train_acc": [], "val_acc": [], "lr": [], "mom": [],
+                                        "train_time": [], "val_time": [], "time_lapsed": [], "total_time_epoch": []})
     print(f"🔁 Resuming from epoch {start_epoch} (best acc: {best_acc:.2f}%)")
     return start_epoch, best_acc, history
 
@@ -628,3 +633,33 @@ class ModelEMA:
 
 
 
+def set_trainable_layers(model, mode, target_layer=None):
+    """Enable/disable layer parameters progressively based on mode."""
+    # First, freeze everything
+    for p in model.parameters():
+        p.requires_grad = False
+
+    if mode == "unfreeze":
+        if target_layer == "layer3":
+            for n, p in model.layer3.named_parameters(): p.requires_grad = True
+            for n, p in model.layer4.named_parameters(): p.requires_grad = True
+            for n, p in model.fc.named_parameters(): p.requires_grad = True
+        elif target_layer == "layer2":
+            for n, p in model.layer2.named_parameters(): p.requires_grad = True
+            for n, p in model.layer3.named_parameters(): p.requires_grad = True
+            for n, p in model.layer4.named_parameters(): p.requires_grad = True
+            for n, p in model.fc.named_parameters(): p.requires_grad = True
+        elif target_layer == "all":
+            for p in model.parameters(): p.requires_grad = True
+
+    elif mode == "freeze":
+        # start with all trainable
+        for p in model.parameters(): p.requires_grad = True
+        if target_layer == "layer3":
+            for n, p in model.layer1.named_parameters(): p.requires_grad = False
+            for n, p in model.layer2.named_parameters(): p.requires_grad = False
+
+def build_optimizer(model, lr, weight_decay=1e-4, momentum=0.9):
+    # only include params that require grad
+    params = [p for p in model.parameters() if p.requires_grad]
+    return optim.SGD(params, lr=lr, momentum=momentum, weight_decay=weight_decay)
