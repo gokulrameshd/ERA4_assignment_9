@@ -33,10 +33,11 @@ from lr_finder_custom import LRFinder
 # ==============================================================
 # ⚙️ CONFIG
 # ==============================================================
-DATA_DIR = "/home/deep/Documents/jeba/Classification_R_D/res/data"
+# DATA_DIR = "/home/deep/Documents/jeba/Classification_R_D/res/data"
+DATA_DIR = "./sample_data"
 BATCH_SIZE = 512
-IMG_SIZE = 224
-NUM_EPOCHS = 30
+IMG_SIZE = 64
+NUM_EPOCHS = 10
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 SAVE_BEST = "./standard_train/best_weights.pth"
 SAVE_LAST = "./standard_train/last_weights.pth"
@@ -47,7 +48,7 @@ USE_MIXUP = True
 ENABLE_LR_FINDER = False
 SAVE_FREQ_LAST = 5   # only overwrite last_weights every N epochs (reduce IO)
 ENABLE_EMA = False
-ENABLE_CHANNEL_LAST = False
+ENABLE_CHANNEL_LAST = True
 os.makedirs(PLOTS_DIR, exist_ok=True)
 
 # Performance flags
@@ -193,7 +194,7 @@ def main():
         )
     else:
         start_epoch, best_acc, history = 0, 0.0, {"train_loss": [], "val_loss": [], "train_acc": [], "val_acc": [], "lr": [],
-                  "mom": [] , "train_time": [], "val_time": [], "time_lapsed": []}
+                                        "mom": [] , "train_time": [], "val_time": [], "time_lapsed": [], "total_time_epoch": [], "total_time_train": []}
     print(f"🚀 Starting new training run from epoch {start_epoch}.")
 
 

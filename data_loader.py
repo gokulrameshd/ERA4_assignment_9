@@ -278,3 +278,15 @@ def set_seed(seed: int = 42):
 def get_total_steps(data_dir, train_transforms =None, stages=None):
     base_dataset = datasets.ImageFolder(os.path.join(data_dir, "train"), train_transforms)
     return sum(ceil((stage["fraction"] * len(base_dataset)) / stage["batch_size"]) * stage["epochs"]for stage in stages)
+
+
+def compute_total_steps(data_dir, stages, num_classes=None):
+    """Compute total optimizer steps across all progressive stages."""
+    base_dataset = datasets.ImageFolder(os.path.join(data_dir, "train"))
+    total_images = len(base_dataset)
+    total_steps = 0
+    for s in stages:
+        num_samples = int(s["fraction"] * total_images)
+        steps_per_epoch = ceil(num_samples / s["batch_size"])
+        total_steps += steps_per_epoch * s["epochs"]
+    return total_steps

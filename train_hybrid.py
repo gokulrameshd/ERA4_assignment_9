@@ -10,7 +10,7 @@ import torch.multiprocessing as mp
 from datetime import datetime
 import matplotlib.pyplot as plt
 
-from data_loader import get_dataloaders, set_seed, get_mixup_fn, get_total_steps
+from data_loader import get_dataloaders, set_seed, get_mixup_fn, compute_total_steps
 from model import create_model
 from hyper_parameter_modules import create_onecycle_scheduler
 # Modern AMP imports
@@ -66,7 +66,7 @@ def get_loaders(img_size, batch_size):
 # ==============================================================
 # 🚀 MAIN TRAIN FUNCTION
 # ==============================================================
-def main_1():
+def main_stage_wise():
     try:
         mp.set_start_method("spawn", force=True)
     except RuntimeError:
@@ -97,9 +97,9 @@ def main_1():
             ]
         else:
             TRAIN_STAGES = [
-                {"fraction": 0.25, "img_size": 128, "batch_size": 512, "epochs": 10, "lr_scale": 1.0},  # Fast warmup "batch_size": 1024 15
-                {"fraction": 0.25, "img_size": 160, "batch_size": 350, "epochs": 7, "lr_scale": 0.8},  # Mid-scale refinement "batch_size": 768 15
-                {"fraction": 0.25, "img_size": 224, "batch_size": 256, "epochs": 5, "lr_scale": 0.6},   # Full fine-tune "batch_size": 512 20
+                {"fraction": 0.25, "img_size": 128, "batch_size": 512, "epochs": 3, "lr_scale": 1.0},  # Fast warmup "batch_size": 1024 15
+                {"fraction": 0.25, "img_size": 160, "batch_size": 350, "epochs": 3, "lr_scale": 0.8},  # Mid-scale refinement "batch_size": 768 15
+                {"fraction": 0.25, "img_size": 224, "batch_size": 256, "epochs": 3, "lr_scale": 0.6},   # Full fine-tune "batch_size": 512 20
             ]
         # NUM_EPOCHS = sum(stage["epochs"] for stage in TRAIN_STAGES)
     else:
@@ -397,7 +397,7 @@ def main_1():
             f"🏁 Training Time: {history["time_lapsed"][-1]:.2f}m\n"
         )
 
-def main_2():
+def main_epoch_wise():
     try:
         mp.set_start_method("spawn", force=True)
     except RuntimeError:
@@ -428,9 +428,9 @@ def main_2():
             ]
         else:
             TRAIN_STAGES = [
-                {"fraction": 0.25, "img_size": 128, "batch_size": 512, "epochs": 5, "lr_scale": 1.0},  # Fast warmup "batch_size": 1024 15
-                {"fraction": 0.25, "img_size": 160, "batch_size": 350, "epochs": 5, "lr_scale": 0.8},  # Mid-scale refinement "batch_size": 768 15
-                {"fraction": 0.25, "img_size": 224, "batch_size": 256, "epochs": 5, "lr_scale": 0.6},   # Full fine-tune "batch_size": 512 20
+                {"fraction": 0.25, "img_size": 128, "batch_size": 512, "epochs": 3, "lr_scale": 1.0},  # Fast warmup "batch_size": 1024 15
+                {"fraction": 0.25, "img_size": 160, "batch_size": 350, "epochs": 3, "lr_scale": 0.8},  # Mid-scale refinement "batch_size": 768 15
+                {"fraction": 0.25, "img_size": 224, "batch_size": 256, "epochs": 3, "lr_scale": 0.6},   # Full fine-tune "batch_size": 512 20
             ]
         # NUM_EPOCHS = sum(stage["epochs"] for stage in TRAIN_STAGES)
     else:
@@ -536,8 +536,8 @@ def main_2():
     
 
     # -----------------------------------------------------------
-    if ENABLE_STAGE_WISE_SCHEDULER == False:
-        total_steps = get_total_steps(DATA_DIR, train_transforms=None, stages=TRAIN_STAGES)
+    if not ENABLE_STAGE_WISE_SCHEDULER :
+        total_steps = compute_total_steps(DATA_DIR, stages=TRAIN_STAGES)
         # 🌀 OneCycleLR Scheduler (per step)
         scheduler = create_onecycle_scheduler(
             optimizer=optimizer,
@@ -632,7 +632,7 @@ def main_2():
                     )
                 else:
                     if current_stage == 0:
-                        total_steps = get_total_steps(DATA_DIR, train_transforms=None, stages=TRAIN_STAGES)
+                        total_steps = compute_total_steps(DATA_DIR, stages=TRAIN_STAGES)
                         # 🌀 OneCycleLR Scheduler (per step)
                         scheduler = create_onecycle_scheduler(
                             optimizer=optimizer,
@@ -741,5 +741,5 @@ def main_2():
             f"🏁 Training Time: {history["time_lapsed"][-1]:.2f}m\n"
         )
 if __name__ == "__main__":
-    # main_1()
-    main_2()
+    # main_stage_wise()
+    main_epoch_wise()
