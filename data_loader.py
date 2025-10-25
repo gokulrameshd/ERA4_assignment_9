@@ -150,7 +150,7 @@ def get_dataloaders(data_dir="data", batch_size=128, img_size=224, fraction=1.0)
 
     val_loader = DataLoader(
         val_dataset,
-        batch_size=256,
+        batch_size=batch_size,
         shuffle=False,
         num_workers=num_workers,
         pin_memory=True,

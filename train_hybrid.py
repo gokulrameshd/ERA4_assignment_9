@@ -47,7 +47,7 @@ USE_MIXUP = True
 ENABLE_LR_FINDER = False
 SAVE_FREQ_LAST = 5   # only overwrite last_weights every N epochs (reduce IO)
 ENABLE_EMA = False
-ENABLE_CHANNEL_LAST = False
+ENABLE_CHANNEL_LAST = True
 os.makedirs(PLOTS_DIR, exist_ok=True)
 
 # Performance flags
@@ -82,9 +82,15 @@ def main():
     # ============================================================
     # ⚙️ Progressive Stage Configurations
     # ============================================================
+    # TRAIN_STAGES = [
+    #     {"fraction": 0.5, "img_size": 128, "batch_size": 1024, "epochs": 20},
+    #     {"fraction": 1.0, "img_size": 224, "batch_size": 512, "epochs": 30},
+    # ]
     TRAIN_STAGES = [
-        {"fraction": 0.5, "img_size": 128, "batch_size": 1024, "epochs": 12},
-        {"fraction": 1.0, "img_size": 224, "batch_size": 512, "epochs": 18},
+        {"fraction": 0.5, "img_size": 128, "batch_size": 1024, "epochs": 15},
+        {"fraction": 0.5, "img_size": 224, "batch_size": 512, "epochs": 15},
+        {"fraction": 0.75, "img_size": 224, "batch_size": 512, "epochs": 10},
+        {"fraction": 1.0, "img_size": 224, "batch_size": 512, "epochs": 10},
     ]
     TOTAL_EPOCHS = sum(stage["epochs"] for stage in TRAIN_STAGES)
 
