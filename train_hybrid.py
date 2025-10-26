@@ -22,7 +22,7 @@ import matplotlib.pyplot as plt
 
 from data_loader import get_dataloaders, set_seed, get_mixup_fn, get_total_steps_stagewise,get_total_steps,compute_total_steps
 from model import create_model
-from hyper_parameter_modules import create_onecycle_scheduler
+from hyper_parameter_modules import create_onecycle_scheduler, create_onecycle_scheduler_global
 # Modern AMP imports
 from torch.amp import GradScaler
 from train_test_modules import (train_validate_save_weights_history_plots,
@@ -52,7 +52,7 @@ ENABLE_LR_FINDER = False
 ENABLE_EMA = False
 ENABLE_CHANNEL_LAST = True
 ENABLE_LR_DAMPENING = False
-ENABLE_STAGE_WISE_SCHEDULER = True
+ENABLE_STAGE_WISE_SCHEDULER = False
 ENABLE_PROGRESSIVE_UNFREEZING = False
 ENABLE_PROGRESSIVE_FREEZING = False
 os.makedirs(PLOTS_DIR, exist_ok=True)
@@ -106,10 +106,17 @@ def main_epoch_wise():
             ]
         else:
             TRAIN_STAGES = [
-                {"fraction": 0.50, "img_size": 128, "batch_size": 1024, "epochs": 20, "lr_scale": 1.0},  # Fast warmup "batch_size": 1024 15
-                {"fraction": 0.75, "img_size": 160, "batch_size": 768, "epochs": 20, "lr_scale": 0.8},  # Mid-scale refinement "batch_size": 768 15
-                {"fraction": 1.00, "img_size": 224, "batch_size": 512, "epochs": 20, "lr_scale": 0.6},   # Full fine-tune "batch_size": 512 20
+                {"fraction": 0.50, "img_size": 128, "batch_size": 1024, "epochs": 20, "lr_scale": 1.0,"use_mixup":True},  # Fast warmup "batch_size": 1024 15
+                {"fraction": 0.75, "img_size": 160, "batch_size": 768, "epochs": 20, "lr_scale": 0.8,"use_mixup":True},  # Mid-scale refinement "batch_size": 768 15
+                {"fraction": 1.00, "img_size": 224, "batch_size": 512, "epochs": 15, "lr_scale": 0.6,"use_mixup":True},   # Full fine-tune "batch_size": 512 20
+                {"fraction": 1.00, "img_size": 224, "batch_size": 512, "epochs": 5, "lr_scale": 0.4,"use_mixup":False},   # Full fine-tune "batch_size": 512 20
             ]
+            # TRAIN_STAGES = [
+            #     {"fraction": 0.25, "img_size": 64, "batch_size": 512 , "epochs": 3, "lr_scale": 1.0,"use_mixup":True},  # Fast warmup "batch_size": 1024 15
+            #     {"fraction": 0.25, "img_size": 64, "batch_size": 256, "epochs": 3, "lr_scale": 0.8,"use_mixup":True},  # Mid-scale refinement "batch_size": 768 15
+            #     {"fraction": 0.25, "img_size": 64, "batch_size": 128, "epochs": 3, "lr_scale": 0.6,"use_mixup":True},   # Full fine-tune "batch_size": 512 20
+            #     {"fraction": 0.25, "img_size": 64, "batch_size": 128, "epochs": 3, "lr_scale": 0.4,"use_mixup":False},   # Full fine-tune "batch_size": 512 20
+            # ]
         # NUM_EPOCHS = sum(stage["epochs"] for stage in TRAIN_STAGES)
     else:
         TRAIN_STAGES = [
@@ -142,7 +149,7 @@ def main_epoch_wise():
     except Exception:
         print("⚠️ torch.compile() failed/ignored, continuing without it")
 
-    if USE_MIXUP:
+    if USE_MIXUP or stage_cfg["use_mixup"]:
         criterion = nn.CrossEntropyLoss()
     else:
         criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
@@ -163,7 +170,7 @@ def main_epoch_wise():
         use_lr = 0.1 #Hardcoded for now 
     print(f"Final Selected LR → {use_lr:.6f}")
     mixup_fn = None
-    if USE_MIXUP:
+    if USE_MIXUP or stage_cfg["use_mixup"]:
         mixup_fn = get_mixup_fn(mixup_alpha=0.2, cutmix_alpha=1.0, mixup_prob=1.0, 
                                 label_smoothing=0.1, num_classes=num_classes)
         criterion = nn.CrossEntropyLoss()
@@ -193,10 +200,10 @@ def main_epoch_wise():
         # total_steps = get_total_steps(DATA_DIR, stages=TRAIN_STAGES)
         total_steps = compute_total_steps(DATA_DIR, stages=TRAIN_STAGES)
         # 🌀 OneCycleLR Scheduler (per step)
-        scheduler = create_onecycle_scheduler(
+        scheduler = create_onecycle_scheduler_global(
             optimizer=optimizer,
             max_lr=use_lr,
-            train_loader_len=total_steps,
+            total_steps=total_steps,
             epochs=NUM_EPOCHS,
         )
     else:
@@ -243,6 +250,11 @@ def main_epoch_wise():
             if epoch >= stage_end:
                 current_stage += 1
                 stage_cfg = TRAIN_STAGES[current_stage]
+                if USE_MIXUP or stage_cfg["use_mixup"]:
+                    criterion = nn.CrossEntropyLoss()
+                else:
+                    criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
+                    mixup_fn = None
                 print(f"\n📈 Switching to Stage {current_stage + 1} → "
                       f"{int(stage_cfg['fraction']*100)}% data | {stage_cfg['img_size']}px | batch={stage_cfg['batch_size']}")
                 if ENABLE_PROGRESSIVE_UNFREEZING:
@@ -282,10 +294,10 @@ def main_epoch_wise():
                     if current_stage == 0:
                         total_steps = compute_total_steps(DATA_DIR, stages=TRAIN_STAGES)
                         # 🌀 OneCycleLR Scheduler (per step)
-                        scheduler = create_onecycle_scheduler(
+                        scheduler = create_onecycle_scheduler_global(
                                                             optimizer=optimizer,
                                                             max_lr=use_lr,
-                                                            train_loader_len=total_steps,
+                                                            total_steps=total_steps,
                                                             epochs=NUM_EPOCHS)
                         print(f"Using LR: {use_lr:.6f} for stage {current_stage+1}")
                         print(f"Total Steps: {total_steps}")
