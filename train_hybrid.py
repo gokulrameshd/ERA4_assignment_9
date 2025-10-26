@@ -102,16 +102,16 @@ def main_epoch_wise():
                         {"fraction": 0.50, "img_size": 128, "batch_size": 1024, "epochs": 8, "lr_scale": 1.0, "use_mixup": True, "freeze_to": None},
 
                         # Stage 2 — Mid-level refinement
-                        {"fraction": 0.75, "img_size": 160, "batch_size": 768,  "epochs": 8, "lr_scale": 0.8, "use_mixup": True, "freeze_to": None},
+                        {"fraction": 0.75, "img_size": 160, "batch_size": 768,  "epochs": 8, "lr_scale": 0.85, "use_mixup": True, "freeze_to": None},
 
                         # Stage 3 — Full data fine-tuning (high res, still all layers trainable)
-                        {"fraction": 1.00, "img_size": 224, "batch_size": 512,  "epochs": 10, "lr_scale": 0.6, "use_mixup": True, "freeze_to": None},
+                        {"fraction": 1.00, "img_size": 224, "batch_size": 512,  "epochs": 12, "lr_scale": 0.7, "use_mixup": True, "freeze_to": None},
 
                         # Stage 4 — Freeze earlier blocks (stabilize deeper learning)
-                        {"fraction": 1.00, "img_size": 224, "batch_size": 768,  "epochs": 10, "lr_scale": 0.4, "use_mixup": False, "freeze_to": "layer2"},
+                        {"fraction": 1.00, "img_size": 224, "batch_size": 768,  "epochs": 12, "lr_scale": 0.55, "use_mixup": False, "freeze_to": "layer2"},
 
                         # Stage 5 — Final fine-tuning, larger batch, low LR
-                        {"fraction": 1.00, "img_size": 224, "batch_size": 1024, "epochs": 8, "lr_scale": 0.25, "use_mixup": False, "freeze_to": "layer3"},
+                        {"fraction": 1.00, "img_size": 224, "batch_size": 1024, "epochs": 10, "lr_scale": 0.4, "use_mixup": False, "freeze_to": "layer3"},
 
                         # Stage 6 — Final fine-tuning, larger batch, low LR
                         {"fraction": 1.00, "img_size": 224, "batch_size": 2048, "epochs": 6, "lr_scale": 0.25, "use_mixup": False, "freeze_to": "layer4"},
@@ -292,8 +292,10 @@ def main_epoch_wise():
                                           start_lr=1e-6, end_lr=1, num_iter=100)
                     # Optional LR dampening
                     elif ENABLE_LR_DAMPENING:
+                        base_lr = 0.1
                         for g in optimizer.param_groups:
-                            g["lr"] *= stage_cfg["lr_scale"]
+                            # g["lr"] *= stage_cfg["lr_scale"]
+                            g["lr"] =base_lr * stage_cfg["lr_scale"]
                             print(f"Dampened LR: {g['lr']:.6f}")
                         use_lr = optimizer.param_groups[0]["lr"]
                     else:
