@@ -663,3 +663,95 @@ def build_optimizer(model, lr, weight_decay=1e-4, momentum=0.9):
     # only include params that require grad
     params = [p for p in model.parameters() if p.requires_grad]
     return optim.SGD(params, lr=lr, momentum=momentum, weight_decay=weight_decay)
+
+def save_multiple_plots(epochs_so_far, history, PLOTS_DIR):
+    save_plot(epochs_so_far, {"Train Acc": history["train_acc"], "Val Acc": history["val_acc"]}, "Accuracy", "Epoch", "Accuracy", "accuracy_live.png",PLOTS_DIR)
+    save_plot(epochs_so_far, {"Train Loss": history["train_loss"], "Val Loss": history["val_loss"]}, "Loss", "Epoch", "Loss", "loss_live.png",PLOTS_DIR)
+    save_plot(epochs_so_far, {"Learning Rate": history["lr"]}, "Learning Rate", "Epoch", "LR", "lr_live.png",PLOTS_DIR)
+    save_plot(epochs_so_far, {"Momentum": history["mom"]}, "Momentum", "Epoch", "Momentum", "momentum_live.png",PLOTS_DIR)
+    #plot train time vs accuracy
+    save_plot(history["time_lapsed"], {"Train Acc": history["train_acc"], "Val Acc": history["val_acc"]}, "Accuracy", "Time(m)", "Accuracy", "accuracy_time.png",PLOTS_DIR)
+    save_plot(history["time_lapsed"], {"Train Loss": history["train_loss"], "Val Loss": history["val_loss"]}, "Loss", "Time(m)", "Loss", "loss_time.png",PLOTS_DIR)
+
+def save_weights(model, optimizer, scheduler, scaler, best_acc, history, PLOTS_DIR, SAVE_BEST, SAVE_LAST, TXT_LOG_FILE, epoch, val_acc):
+    if val_acc > best_acc:
+        best_acc = val_acc
+        torch.save(model.state_dict(), SAVE_BEST)
+        print(f"New Best Accuracy: {best_acc*100:.2f}% (saved as {SAVE_BEST})\033[0m")
+        with open(TXT_LOG_FILE, "a") as log:
+            log.write(f"New Best Accuracy: {best_acc*100:.2f}% (saved as {SAVE_BEST})\033[0m \n")
+
+    save_checkpoint(epoch, model, optimizer, scheduler, scaler, best_acc, history,
+                    path=SAVE_LAST)
+
+    return best_acc
+
+def train_validate_save_weights_history_plots(model, train_loader, val_loader, optimizer, criterion, scheduler,
+                                    scaler, mixup_fn,  ema, num_classes, PLOTS_DIR, 
+                                    SAVE_BEST, SAVE_LAST, TXT_LOG_FILE, epoch, best_acc, history, use_lr,
+                                     CSV_LOG_FILE, NUM_EPOCHS, enable_last_channel, device):
+
+    start_time = time.time()
+    # ---------------------------------------
+        # 🏋️ Train
+        # ---------------------------------------
+    train_results = train_one_epoch_imagenet(model, train_loader, optimizer, criterion, device,
+                                            scheduler, scaler, mixup_fn=mixup_fn, 
+                                            enable_last_channel = enable_last_channel,
+                                            ema=ema,num_classes=num_classes)
+    train_loss = train_results["loss"]
+    train_acc = train_results["acc"]
+    scaler = train_results["scaler"]
+    train_time = train_results["time"]
+    # ---------------------------------------
+    # ✅ Validate
+    # ---------------------------------------
+    val_model = ema.ema if ema is not None else model
+    val_results = validate_imagenet(val_model, val_loader, criterion, device,  num_classes=num_classes)
+    val_loss = val_results["loss"]
+    val_acc = val_results["acc"]
+    val_time = val_results["time"]
+    best_acc = save_weights(model, optimizer, scheduler, scaler, best_acc, history, PLOTS_DIR, SAVE_BEST, SAVE_LAST, TXT_LOG_FILE, epoch, val_acc)
+    # ---------------------------------------
+    # Log stats
+    # ---------------------------------------
+    current_lr = scheduler.get_last_lr()[0] if scheduler else use_lr
+    current_mom = optimizer.param_groups[0].get("momentum", None)
+    total_time_epoch = (time.time() - start_time)/60
+    try:
+        time_lapsed = history["time_lapsed"][-1] + total_time_epoch
+    except :
+        time_lapsed = total_time_epoch
+    history["train_loss"].append(train_loss)
+    history["val_loss"].append(val_loss)
+    history["train_acc"].append(train_acc)
+    history["val_acc"].append(val_acc)
+    history["lr"].append(current_lr)
+    history["mom"].append(current_mom)
+    history["time_lapsed"].append(time_lapsed)
+    history["train_time"].append(train_time)
+    history["val_time"].append(val_time)
+    history["total_time_epoch"].append(total_time_epoch)
+
+    print(
+        f"[Epoch {epoch+1:03}/{NUM_EPOCHS}] | ⏱️ {train_time:.2f}m | "
+        f"LR: {current_lr:.6f} | Train Acc: {train_acc*100:.2f}% | Val Acc: {val_acc*100:.2f}%"
+    )
+
+    # ---- LOG ----
+    with open(TXT_LOG_FILE, "a") as log:
+        log.write(
+            # f"{train_loss:.4f},{train_acc:.4f},{val_loss:.4f},{val_acc:.4f},{current_lr:.6f},{current_mom:.4f}\n"
+            f"[Epoch {epoch+1:03}/{NUM_EPOCHS}] | ⏱️ {train_time:.2f}m | "
+            f"LR: {current_lr:.6f} | Train Acc: {train_acc*100:.2f}% | Train Loss: {train_loss:.4f} | Train Time: {train_time:.2f}m  | Val Acc: {val_acc*100:.2f}% | Val Loss: {val_loss:.4f} | Val Time: {val_time:.2f}m | "
+            f"Momentum: {current_mom:.4f} \n"
+        )
+    with open(CSV_LOG_FILE, "a") as log:
+        log.write(f"{epoch+1:03},{train_loss:.4f},{train_acc:.4f},{train_time:.2f},{val_loss:.4f},{val_acc:.4f},{val_time:.2f},{current_lr:.6f},{current_mom:.4f}\n")
+
+    # ---- DYNAMIC PLOTS ----
+    epochs_so_far = range(1, epoch + 2)
+
+    save_multiple_plots(epochs_so_far, history, PLOTS_DIR)
+
+    return scaler, history, best_acc

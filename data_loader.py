@@ -275,12 +275,42 @@ def set_seed(seed: int = 42):
     torch.backends.cudnn.deterministic = False
     torch.backends.cudnn.benchmark = True
 
+def _get_total_steps(data_dir, stages):
+    base_dataset = datasets.ImageFolder(os.path.join(data_dir, "train"))
+    total_images = len(base_dataset)
+    total_steps = 0
+    for s in stages:
+        num_samples = ceil(s["fraction"] * total_images)
+        steps_per_epoch = ceil(num_samples / s["batch_size"])
+        total_steps += steps_per_epoch * s["epochs"]
+    return total_steps
+
 def get_total_steps(data_dir, train_transforms =None, stages=None):
     base_dataset = datasets.ImageFolder(os.path.join(data_dir, "train"), train_transforms)
-    return sum(ceil((stage["fraction"] * len(base_dataset)) / stage["batch_size"]) * stage["epochs"]for stage in stages)
+    total_steps = 0
+    for s in stages:
+        subset_len = int(len(base_dataset) * s["fraction"])
+        train_subset, _ = random_split(base_dataset, [subset_len, len(base_dataset) - subset_len])
+        train_dataset = train_subset
+        train_loader = DataLoader(
+            train_dataset,
+            batch_size=s["batch_size"],
+            shuffle=True,
+            num_workers=4,
+            persistent_workers=True,
+            prefetch_factor=4,
+            drop_last=True,   # safe with mixup
+        )
+        # total_steps += len(train_loader)
+        total_steps += len(train_loader)*s["epochs"]
+    return total_steps
 
+def get_total_steps_stagewise( train_loader, stage_cfg=None):
+    # total_steps = len(train_loader)*stage_cfg["epochs"]
+    total_steps = len(train_loader)
+    return total_steps
 
-def compute_total_steps(data_dir, stages, num_classes=None):
+def compute_total_steps(data_dir, stages):
     """Compute total optimizer steps across all progressive stages."""
     base_dataset = datasets.ImageFolder(os.path.join(data_dir, "train"))
     total_images = len(base_dataset)

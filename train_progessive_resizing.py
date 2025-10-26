@@ -79,9 +79,9 @@ def train_1():
 
     # Progressive resizing stages
     stages = [
-        {"img_size": 128, "batch_size": 1024, "epochs": 5, "mixup": True},#512 10
+        {"img_size": 64, "batch_size": 1024, "epochs": 5, "mixup": True},#512 10
         # {"img_size": 160, "batch_size": 512, "epochs": 8,  "mixup": True},#384
-        {"img_size": 224, "batch_size": 256, "epochs": 5, "mixup": False},#256 12
+        {"img_size": 64, "batch_size": 512, "epochs": 5, "mixup": False},#256 12
     ]
     # stages = [
     #     {"img_size": 56, "batch_size": 512, "epochs": 10},   # Stage 0: learn coarse features - 8
@@ -451,5 +451,5 @@ def train_2():
         log.write(f"🏁 Training Time: {train_time/60:.2f}m\n")
 
 if __name__ == "__main__":
-    # train_1()
-    train_2()
+    train_1()
+    # train_2()

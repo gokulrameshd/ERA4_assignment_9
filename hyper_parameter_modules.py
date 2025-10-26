@@ -114,7 +114,7 @@ def get_hyper_parameters_resnet34_cifar100_cyclic_lr(model, trainloader):
     scaler = torch.cuda.amp.GradScaler()
     return criterion, optimizer, scheduler, scaler
 
-def get_hyper_parameters_one_cycle_lr_with_cos_annealing(model, trainloader, epochs=30):
+def get_hyper_parameters_one_cycle_lr_with_cos_annealing(model, trainloader,lr, epochs=30):
     """
     Returns criterion, optimizer, scheduler, and scaler for CIFAR-100 with OneCycleLR (cosine annealing).
     
@@ -126,14 +126,14 @@ def get_hyper_parameters_one_cycle_lr_with_cos_annealing(model, trainloader, epo
     
     optimizer = torch.optim.SGD(
         model.parameters(),
-        lr=0.1,                # max LR, actual schedule handled by OneCycleLR
+        lr=lr,                # max LR, actual schedule handled by OneCycleLR
         momentum=0.9,
         weight_decay=5e-4
     )
     total_steps = len(trainloader) * epochs
     scheduler = OneCycleLR(
         optimizer,
-        max_lr=0.05,                         # peak LR
+        max_lr=lr,                         # peak LR
         epochs=epochs,                       # full training epochs
         steps_per_epoch=len(trainloader),     # batches per epoch
         # total_steps=total_steps - 1,  # ✅ minus one to prevent overshoot
@@ -155,8 +155,8 @@ def create_onecycle_scheduler(optimizer, max_lr, train_loader_len, epochs,
         epochs=epochs,
         pct_start=pct_start,
         anneal_strategy="cos",
-        div_factor=div_factor,
-        final_div_factor=final_div_factor,
+        # div_factor=div_factor,
+        # final_div_factor=final_div_factor,
     )
     return scheduler
 

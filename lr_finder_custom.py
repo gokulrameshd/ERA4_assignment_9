@@ -133,12 +133,15 @@ class LRFinder:
             except StopIteration:
                 iterator = iter(train_loader)
                 inputs, labels = next(iterator)
-
+            # print(iteration)
             inputs, labels = inputs.to(self.device), labels.to(self.device)
             self.optimizer.zero_grad(set_to_none=True)
 
             # AMP forward/backward
             if use_amp:
+                if not hasattr(self, '_scaler_initialized'):
+                    self.scaler = GradScaler()
+                    self._scaler_initialized = True
                 with autocast(device_type=str(self.device)):
                     outputs = self.model(inputs)
                     loss = self.criterion(outputs, labels)
@@ -301,3 +304,31 @@ class LRFinder:
             torch.cuda.synchronize()
             torch.cuda.empty_cache()
         print("✅ Model and optimizer safely reset on device:", self.device)
+
+
+def find_lr(model, optimizer, criterion, device,  train_loader,
+           plots_dir,image_name = "lr_finder_plot.png", 
+           start_lr=1e-6, end_lr=1, num_iter=100):
+    # model = copy.deepcopy(model)
+    lr_finder = LRFinder(model, optimizer, criterion, device=device, cache_dir=plots_dir)
+    print(lr_finder)
+    lr_finder.range_test(train_loader, start_lr=start_lr, end_lr=end_lr, num_iter=num_iter)
+    # # Plot and get LR suggestions (plot returns suggested_lr, safe_lr)
+    best_lr, safe_lr = lr_finder.plot(
+                                    save_path=os.path.join(plots_dir, image_name),
+                                    save_csv=True,
+                                    suggest=True,
+                                    annotate=True
+                                    )
+    # Fallback if LR finder fails
+    if best_lr is None or not math.isfinite(best_lr) or best_lr <= 0:
+        print("LR Finder returned invalid value. Falling back to 1e-3.")
+        best_lr, safe_lr = 1e-3, 1e-3 * 0.3
+
+    print(f"\nRaw Suggested LR: {best_lr:.6f}")
+    print(f"Safe Max LR for OneCycleLR: {safe_lr:.6f}")
+
+    # Clamp LR to safe bounds
+    lr_floor, lr_ceiling = 1e-6, 0.1
+    use_lr = float(max(lr_floor, min(safe_lr, lr_ceiling)))
+    return use_lr
