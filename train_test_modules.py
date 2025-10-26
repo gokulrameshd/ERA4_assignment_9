@@ -13,6 +13,7 @@ import time
 from torch.cuda.amp import  GradScaler #autocast, old version 1.11.0
 from data_loader import get_mixup_fn
 from torch import autocast #new version 2.5.0
+from gpu_stats import get_gpu_usage
 # Let's visualize some of the images
 import copy
 
@@ -422,7 +423,7 @@ def train_one_epoch_imagenet(
                 "Mem": {mem_alloc},
                 "ETA": f"{eta/60:.1f}m"
             })
-
+        # stats = get_gpu_usage(device=device)
     # Epoch-end scheduler (for StepLR, CosineLR, etc.)
     if scheduler and not isinstance(scheduler, torch.optim.lr_scheduler.OneCycleLR):
         scheduler.step()
@@ -633,7 +634,7 @@ class ModelEMA:
 
 
 
-def set_trainable_layers(model, mode, target_layer=None):
+def _set_trainable_layers(model, mode, target_layer=None):
     """Enable/disable layer parameters progressively based on mode."""
     # First, freeze everything
     for p in model.parameters():
@@ -655,9 +656,36 @@ def set_trainable_layers(model, mode, target_layer=None):
     elif mode == "freeze":
         # start with all trainable
         for p in model.parameters(): p.requires_grad = True
+        if target_layer == "layer4":
+            for n, p in model.layer1.named_parameters(): p.requires_grad = False
+            for n, p in model.layer2.named_parameters(): p.requires_grad = False
+            for n, p in model.layer3.named_parameters(): p.requires_grad = False
+            print("Freezing layer1, layer2 and layer3 ")
         if target_layer == "layer3":
             for n, p in model.layer1.named_parameters(): p.requires_grad = False
             for n, p in model.layer2.named_parameters(): p.requires_grad = False
+            print("Freezing layer1 and layer2 ")
+        if target_layer == "layer2":
+            for n, p in model.layer1.named_parameters(): p.requires_grad = False
+            print("Freezing layer1")
+
+def set_trainable_layers(model, mode, target_layer):
+    freeze_map = {
+        "layer1": [model.layer1],
+        "layer2": [model.layer1, model.layer2],
+        "layer3": [model.layer1, model.layer2, model.layer3],
+        "layer4": [model.layer1, model.layer2, model.layer3, model.layer4],
+    }
+    if mode == "freeze" and target_layer in freeze_map:
+        for layer_number,block in enumerate(freeze_map[target_layer]):
+            print(f"Freezing layer {layer_number+1}")
+            for p in block.parameters():
+                p.requires_grad = False
+    elif mode == "unfreeze" and target_layer in freeze_map:
+        for layer_number,block in enumerate(freeze_map[target_layer]):
+            print(f"Unfreezing layer {layer_number+1}")
+            for p in block.parameters():
+                p.requires_grad = True
 
 def build_optimizer(model, lr, weight_decay=1e-4, momentum=0.9):
     # only include params that require grad
@@ -755,3 +783,4 @@ def train_validate_save_weights_history_plots(model, train_loader, val_loader, o
     save_multiple_plots(epochs_so_far, history, PLOTS_DIR)
 
     return scaler, history, best_acc
+

@@ -28,7 +28,7 @@ from torch.amp import GradScaler
 from train_test_modules import (train_validate_save_weights_history_plots,
                                 load_checkpoint,ModelEMA,set_trainable_layers,build_optimizer)
 from lr_finder_custom import LRFinder, find_lr
-
+from gpu_stats import get_gpu_usage
 import warnings
 warnings.filterwarnings("ignore", category=UserWarning)
 
@@ -51,10 +51,10 @@ SAVE_FREQ_LAST = 5   # only overwrite last_weights every N epochs (reduce IO)
 ENABLE_LR_FINDER = False
 ENABLE_EMA = False
 ENABLE_CHANNEL_LAST = True
-ENABLE_LR_DAMPENING = False
+ENABLE_LR_DAMPENING = True
 ENABLE_STAGE_WISE_SCHEDULER = False
 ENABLE_PROGRESSIVE_UNFREEZING = False
-ENABLE_PROGRESSIVE_FREEZING = False
+ENABLE_PROGRESSIVE_FREEZING = True
 os.makedirs(PLOTS_DIR, exist_ok=True)
 
 # Performance flags
@@ -98,12 +98,30 @@ def main_epoch_wise():
                         ]
         elif ENABLE_PROGRESSIVE_FREEZING:
             TRAIN_STAGES = [
-                {"fraction": 0.5, "img_size": 128, "batch_size": 1024, "epochs": 15,"lr_scale": 1.0, "freeze_to": None},
-                {"fraction": 0.5, "img_size": 160, "batch_size": 512, "epochs": 15, "lr_scale": 0.9, "freeze_to": None},
-                {"fraction": 0.5, "img_size": 224, "batch_size": 512, "epochs": 10, "lr_scale": 0.8, "freeze_to": None},
-                {"fraction": 0.75, "img_size": 224, "batch_size": 750, "epochs": 10, "lr_scale": 0.7, "freeze_to": "layer2"},
-                {"fraction": 1.0, "img_size": 224, "batch_size": 1024, "epochs": 10, "lr_scale": 0.5, "freeze_to": "layer3"},
-            ]
+                        # Stage 1 — Fast feature warmup (edges/textures)
+                        {"fraction": 0.50, "img_size": 128, "batch_size": 1024, "epochs": 8, "lr_scale": 1.0, "use_mixup": True, "freeze_to": None},
+
+                        # Stage 2 — Mid-level refinement
+                        {"fraction": 0.75, "img_size": 160, "batch_size": 768,  "epochs": 8, "lr_scale": 0.8, "use_mixup": True, "freeze_to": None},
+
+                        # Stage 3 — Full data fine-tuning (high res, still all layers trainable)
+                        {"fraction": 1.00, "img_size": 224, "batch_size": 512,  "epochs": 10, "lr_scale": 0.6, "use_mixup": True, "freeze_to": None},
+
+                        # Stage 4 — Freeze earlier blocks (stabilize deeper learning)
+                        {"fraction": 1.00, "img_size": 224, "batch_size": 768,  "epochs": 10, "lr_scale": 0.4, "use_mixup": False, "freeze_to": "layer2"},
+
+                        # Stage 5 — Final fine-tuning, larger batch, low LR
+                        {"fraction": 1.00, "img_size": 224, "batch_size": 1024, "epochs": 8, "lr_scale": 0.25, "use_mixup": False, "freeze_to": "layer3"},
+
+                        # Stage 6 — Final fine-tuning, larger batch, low LR
+                        {"fraction": 1.00, "img_size": 224, "batch_size": 2048, "epochs": 6, "lr_scale": 0.25, "use_mixup": False, "freeze_to": "layer4"},
+                        ]
+            # TRAIN_STAGES = [
+            #     {"fraction": 0.25, "img_size": 64, "batch_size": 512 , "epochs": 3, "lr_scale": 1.0,"use_mixup":True, "freeze_to": None},  # Fast warmup "batch_size": 1024 15
+            #     {"fraction": 0.25, "img_size": 64, "batch_size": 256, "epochs": 3, "lr_scale": 0.6,"use_mixup":False, "freeze_to": "layer2"},   # Full fine-tune "batch_size": 512 20
+            #     {"fraction": 0.25, "img_size": 64, "batch_size": 512, "epochs": 3, "lr_scale": 0.5,"use_mixup":False, "freeze_to": "layer3"}, # Final fine-tune "batch_size": 256 20
+            #     {"fraction": 0.25, "img_size": 64, "batch_size": 128, "epochs": 3, "lr_scale": 0.4,"use_mixup":False, "freeze_to": "layer4"}, # Final fine-tune "batch_size": 256 20
+            # ]
         else:
             TRAIN_STAGES = [
                 {"fraction": 0.50, "img_size": 128, "batch_size": 1024, "epochs": 20, "lr_scale": 1.0,"use_mixup":True},  # Fast warmup "batch_size": 1024 15
@@ -308,6 +326,8 @@ def main_epoch_wise():
                                                                             PLOTS_DIR, SAVE_BEST, SAVE_LAST, TXT_LOG_FILE, 
                                                                             epoch, best_acc, history, use_lr, CSV_LOG_FILE, NUM_EPOCHS,
                                                                             enable_last_channel = ENABLE_CHANNEL_LAST, device = DEVICE)
+        # stats = get_gpu_usage(device=DEVICE)
+        # print(f"GPU Usage after epoch {epoch+1}: {stats}")
     # -----------------------------------------------------------
     print(f"\n🏁 Training Complete — Best Val Acc: {best_acc*100:.2f}%")
     print(f"✅ Best model: {SAVE_BEST}")
