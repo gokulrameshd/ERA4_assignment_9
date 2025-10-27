@@ -335,14 +335,14 @@ def main_epoch_wise():
     print(f"✅ Best model: {SAVE_BEST}")
     print(f"✅ Last model: {SAVE_LAST}")
     print(f"🖼️ Live plots in: {PLOTS_DIR}")
-    print(f"🏁 Training Time: {history["time_lapsed"][-1]:.2f}m")
+    print(f"🏁 Training Time: {history['time_lapsed'][-1]:.2f}m")
     with open(TXT_LOG_FILE, "a") as log:
         log.write(
             f"🏁 Training Complete — Best Val Acc: {best_acc*100:.2f}%\n"
             f"✅ Best model: {SAVE_BEST}\n"
             f"✅ Last model: {SAVE_LAST}\n"
             f"🖼️ Live plots in: {PLOTS_DIR}\n"
-            f"🏁 Training Time: {history["time_lapsed"][-1]:.2f}m\n"
+            f"🏁 Training Time: {history['time_lapsed'][-1]:.2f}m\n"
         )
 if __name__ == "__main__":
     # main_stage_wise()
