@@ -36,14 +36,15 @@ from lr_finder_custom import LRFinder
 # DATA_DIR = "/home/deep/Documents/jeba/Classification_R_D/res/data"
 DATA_DIR = "./sample_data"
 BATCH_SIZE = 512
-IMG_SIZE = 64
-NUM_EPOCHS = 10
+IMG_SIZE = 224
+NUM_EPOCHS = 50
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-SAVE_BEST = "./standard_train/best_weights.pth"
-SAVE_LAST = "./standard_train/last_weights.pth"
-CSV_LOG_FILE = "./standard_train/training_log.csv"
-TXT_LOG_FILE = "./standard_train/training_log.txt"
-PLOTS_DIR = "./standard_train/plots"
+ROOT_DIR = "standard_train"
+SAVE_BEST = f"./{ROOT_DIR}/best_weights.pth"
+SAVE_LAST = f"./{ROOT_DIR}/last_weights.pth"
+CSV_LOG_FILE = f"./{ROOT_DIR}/training_log.csv"
+TXT_LOG_FILE = f"./{ROOT_DIR}/training_log.txt"
+PLOTS_DIR = f"./{ROOT_DIR}/plots"
 USE_MIXUP = True
 ENABLE_LR_FINDER = False
 SAVE_FREQ_LAST = 5   # only overwrite last_weights every N epochs (reduce IO)
@@ -206,6 +207,10 @@ def main():
         # ---------------------------------------
         # 🏋️ Train
         # ---------------------------------------
+        if epoch >= (NUM_EPOCHS - (NUM_EPOCHS//10)):
+            print("Mixup Diabled!!")
+            mixup_fn = None
+            criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
         train_results = train_one_epoch_imagenet(model, train_loader, optimizer, criterion, DEVICE,
                         scheduler, scaler, mixup_fn=mixup_fn, enable_last_channel = ENABLE_CHANNEL_LAST,ema=ema,num_classes=num_classes)
         train_loss = train_results["loss"]

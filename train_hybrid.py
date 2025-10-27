@@ -41,20 +41,21 @@ BATCH_SIZE = 512
 IMG_SIZE = 224
 NUM_EPOCHS = 30
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-SAVE_BEST = "./hydrid_train/best_weights.pth"
-SAVE_LAST = "./hydrid_train/last_weights.pth"
-CSV_LOG_FILE = "./hydrid_train/training_log.csv"
-TXT_LOG_FILE = "./hydrid_train/training_log.txt"
-PLOTS_DIR = "./hydrid_train/plots"
+ROOT_DIR = "hybrid_train_global_no_freeze"
+SAVE_BEST = f"./{ROOT_DIR}/best_weights.pth"
+SAVE_LAST = f"./{ROOT_DIR}/last_weights.pth"
+CSV_LOG_FILE = f"./{ROOT_DIR}/training_log.csv"
+TXT_LOG_FILE = f"./{ROOT_DIR}/training_log.txt"
+PLOTS_DIR = f"./{ROOT_DIR}/plots"
 USE_MIXUP = True
 SAVE_FREQ_LAST = 5   # only overwrite last_weights every N epochs (reduce IO)
 ENABLE_LR_FINDER = False
 ENABLE_EMA = False
 ENABLE_CHANNEL_LAST = True
-ENABLE_LR_DAMPENING = True
+ENABLE_LR_DAMPENING = False
 ENABLE_STAGE_WISE_SCHEDULER = False
 ENABLE_PROGRESSIVE_UNFREEZING = False
-ENABLE_PROGRESSIVE_FREEZING = True
+ENABLE_PROGRESSIVE_FREEZING = False
 os.makedirs(PLOTS_DIR, exist_ok=True)
 
 # Performance flags
@@ -105,16 +106,16 @@ def main_epoch_wise():
                         {"fraction": 0.75, "img_size": 160, "batch_size": 768,  "epochs": 8, "lr_scale": 0.85, "use_mixup": True, "freeze_to": None},
 
                         # Stage 3 — Full data fine-tuning (high res, still all layers trainable)
-                        {"fraction": 1.00, "img_size": 224, "batch_size": 512,  "epochs": 12, "lr_scale": 0.7, "use_mixup": True, "freeze_to": None},
+                        {"fraction": 1.00, "img_size": 224, "batch_size": 512,  "epochs": 10, "lr_scale": 0.7, "use_mixup": True, "freeze_to": None},
 
                         # Stage 4 — Freeze earlier blocks (stabilize deeper learning)
-                        {"fraction": 1.00, "img_size": 224, "batch_size": 768,  "epochs": 12, "lr_scale": 0.55, "use_mixup": False, "freeze_to": "layer2"},
+                        {"fraction": 1.00, "img_size": 224, "batch_size": 512,  "epochs": 10, "lr_scale": 0.55, "use_mixup": False, "freeze_to": "layer2"},
 
                         # Stage 5 — Final fine-tuning, larger batch, low LR
-                        {"fraction": 1.00, "img_size": 224, "batch_size": 1024, "epochs": 10, "lr_scale": 0.4, "use_mixup": False, "freeze_to": "layer3"},
+                        {"fraction": 1.00, "img_size": 224, "batch_size": 512, "epochs": 8, "lr_scale": 0.4, "use_mixup": False, "freeze_to": "layer3"},
 
                         # Stage 6 — Final fine-tuning, larger batch, low LR
-                        {"fraction": 1.00, "img_size": 224, "batch_size": 2048, "epochs": 6, "lr_scale": 0.25, "use_mixup": False, "freeze_to": "layer4"},
+                        {"fraction": 1.00, "img_size": 224, "batch_size": 512, "epochs": 6, "lr_scale": 0.25, "use_mixup": False, "freeze_to": "layer4"},
                         ]
             # TRAIN_STAGES = [
             #     {"fraction": 0.25, "img_size": 64, "batch_size": 512 , "epochs": 3, "lr_scale": 1.0,"use_mixup":True, "freeze_to": None},  # Fast warmup "batch_size": 1024 15
@@ -124,10 +125,10 @@ def main_epoch_wise():
             # ]
         else:
             TRAIN_STAGES = [
-                {"fraction": 0.50, "img_size": 128, "batch_size": 1024, "epochs": 20, "lr_scale": 1.0,"use_mixup":True},  # Fast warmup "batch_size": 1024 15
-                {"fraction": 0.75, "img_size": 160, "batch_size": 768, "epochs": 20, "lr_scale": 0.8,"use_mixup":True},  # Mid-scale refinement "batch_size": 768 15
-                {"fraction": 1.00, "img_size": 224, "batch_size": 512, "epochs": 15, "lr_scale": 0.6,"use_mixup":True},   # Full fine-tune "batch_size": 512 20
-                {"fraction": 1.00, "img_size": 224, "batch_size": 512, "epochs": 5, "lr_scale": 0.4,"use_mixup":False},   # Full fine-tune "batch_size": 512 20
+                {"fraction": 0.50, "img_size": 128, "batch_size": 1024, "epochs": 10, "lr_scale": 1.0,"use_mixup":True},  # Fast warmup "batch_size": 1024 15
+                {"fraction": 0.75, "img_size": 160, "batch_size": 768, "epochs": 15, "lr_scale": 0.8,"use_mixup":True},  # Mid-scale refinement "batch_size": 768 15
+                {"fraction": 1.00, "img_size": 224, "batch_size": 512, "epochs": 20, "lr_scale": 0.6,"use_mixup":True},   # Full fine-tune "batch_size": 512 20
+                {"fraction": 1.00, "img_size": 224, "batch_size": 256, "epochs": 5, "lr_scale": 0.4,"use_mixup":False},   # Full fine-tune "batch_size": 512 20
             ]
             # TRAIN_STAGES = [
             #     {"fraction": 0.25, "img_size": 64, "batch_size": 512 , "epochs": 3, "lr_scale": 1.0,"use_mixup":True},  # Fast warmup "batch_size": 1024 15
