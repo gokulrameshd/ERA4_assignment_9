@@ -329,6 +329,6 @@ def find_lr(model, optimizer, criterion, device,  train_loader,
     print(f"Safe Max LR for OneCycleLR: {safe_lr:.6f}")
 
     # Clamp LR to safe bounds
-    lr_floor, lr_ceiling = 1e-6, 0.1
+    lr_floor, lr_ceiling = 1e-3, 0.4
     use_lr = float(max(lr_floor, min(safe_lr, lr_ceiling)))
     return use_lr

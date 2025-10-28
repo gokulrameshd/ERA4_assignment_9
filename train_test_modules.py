@@ -577,6 +577,13 @@ def save_checkpoint(epoch, model, optimizer, scheduler, scaler, best_acc, histor
     torch.save(state, path)
     print(f"✅ Checkpoint saved at {path} (epoch {epoch})")
 
+def load_best_weights(model, checkpoint_path):
+    checkpoint = torch.load(checkpoint_path, map_location="cpu")  # or DEVICE if you prefer
+    state_dict = checkpoint.get("model_state", checkpoint)
+    model.load_state_dict(state_dict)
+    print(f"✅ Loaded best model weights from {checkpoint_path}")
+    return model
+
 
 def load_checkpoint(path, model, optimizer=None, scheduler=None, scaler=None, device="cuda"):
     if not os.path.exists(path):
@@ -701,22 +708,22 @@ def save_multiple_plots(epochs_so_far, history, PLOTS_DIR):
     save_plot(history["time_lapsed"], {"Train Acc": history["train_acc"], "Val Acc": history["val_acc"]}, "Accuracy", "Time(m)", "Accuracy", "accuracy_time.png",PLOTS_DIR)
     save_plot(history["time_lapsed"], {"Train Loss": history["train_loss"], "Val Loss": history["val_loss"]}, "Loss", "Time(m)", "Loss", "loss_time.png",PLOTS_DIR)
 
-def save_weights(model, optimizer, scheduler, scaler, best_acc, history, PLOTS_DIR, SAVE_BEST, SAVE_LAST, TXT_LOG_FILE, epoch, val_acc):
+def save_weights(model, optimizer, scheduler, scaler, best_acc, best_weights,history, PLOTS_DIR, SAVE_BEST, SAVE_LAST, TXT_LOG_FILE, epoch, val_acc):
     if val_acc > best_acc:
         best_acc = val_acc
         torch.save(model.state_dict(), SAVE_BEST)
         print(f"New Best Accuracy: {best_acc*100:.2f}% (saved as {SAVE_BEST})\033[0m")
         with open(TXT_LOG_FILE, "a") as log:
             log.write(f"New Best Accuracy: {best_acc*100:.2f}% (saved as {SAVE_BEST})\033[0m \n")
-
+        best_weights = model.state_dict()  # carry forward
     save_checkpoint(epoch, model, optimizer, scheduler, scaler, best_acc, history,
                     path=SAVE_LAST)
 
-    return best_acc
+    return best_acc,best_weights
 
 def train_validate_save_weights_history_plots(model, train_loader, val_loader, optimizer, criterion, scheduler,
                                     scaler, mixup_fn,  ema, num_classes, PLOTS_DIR, 
-                                    SAVE_BEST, SAVE_LAST, TXT_LOG_FILE, epoch, best_acc, history, use_lr,
+                                    SAVE_BEST, SAVE_LAST, TXT_LOG_FILE, epoch, best_acc, best_weights,history, use_lr,
                                      CSV_LOG_FILE, NUM_EPOCHS, enable_last_channel, device):
 
     start_time = time.time()
@@ -739,7 +746,7 @@ def train_validate_save_weights_history_plots(model, train_loader, val_loader, o
     val_loss = val_results["loss"]
     val_acc = val_results["acc"]
     val_time = val_results["time"]
-    best_acc = save_weights(model, optimizer, scheduler, scaler, best_acc, history, PLOTS_DIR, SAVE_BEST, SAVE_LAST, TXT_LOG_FILE, epoch, val_acc)
+    best_acc ,best_weights  = save_weights(model, optimizer, scheduler, scaler, best_acc,best_weights, history, PLOTS_DIR, SAVE_BEST, SAVE_LAST, TXT_LOG_FILE, epoch, val_acc)
     # ---------------------------------------
     # Log stats
     # ---------------------------------------
@@ -782,5 +789,5 @@ def train_validate_save_weights_history_plots(model, train_loader, val_loader, o
 
     save_multiple_plots(epochs_so_far, history, PLOTS_DIR)
 
-    return scaler, history, best_acc
+    return scaler, history, best_acc,best_weights
 

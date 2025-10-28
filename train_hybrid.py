@@ -22,10 +22,10 @@ import matplotlib.pyplot as plt
 
 from data_loader import get_dataloaders, set_seed, get_mixup_fn, get_total_steps_stagewise,get_total_steps,compute_total_steps
 from model import create_model
-from hyper_parameter_modules import create_onecycle_scheduler, create_onecycle_scheduler_global
+from hyper_parameter_modules import create_onecycle_scheduler, create_onecycle_scheduler_global,create_onecycle_scheduler_stage_wise
 # Modern AMP imports
 from torch.amp import GradScaler
-from train_test_modules import (train_validate_save_weights_history_plots,
+from train_test_modules import (train_validate_save_weights_history_plots,load_best_weights,
                                 load_checkpoint,ModelEMA,set_trainable_layers,build_optimizer)
 from lr_finder_custom import LRFinder, find_lr
 from gpu_stats import get_gpu_usage
@@ -41,7 +41,7 @@ BATCH_SIZE = 512
 IMG_SIZE = 224
 NUM_EPOCHS = 30
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-ROOT_DIR = "hybrid_train_global_no_freeze"
+ROOT_DIR = "hybrid_train_stage_wise_4_stage"
 SAVE_BEST = f"./{ROOT_DIR}/best_weights.pth"
 SAVE_LAST = f"./{ROOT_DIR}/last_weights.pth"
 CSV_LOG_FILE = f"./{ROOT_DIR}/training_log.csv"
@@ -52,10 +52,12 @@ SAVE_FREQ_LAST = 5   # only overwrite last_weights every N epochs (reduce IO)
 ENABLE_LR_FINDER = False
 ENABLE_EMA = False
 ENABLE_CHANNEL_LAST = True
-ENABLE_LR_DAMPENING = False
-ENABLE_STAGE_WISE_SCHEDULER = False
+ENABLE_LR_DAMPENING = True
+ENABLE_STAGE_WISE_SCHEDULER = True
+ENABLE_LOAD_BEST_WEIGHTS_STAGE_WISE = True
 ENABLE_PROGRESSIVE_UNFREEZING = False
 ENABLE_PROGRESSIVE_FREEZING = False
+
 os.makedirs(PLOTS_DIR, exist_ok=True)
 
 # Performance flags
@@ -83,6 +85,7 @@ def main_epoch_wise():
         pass
 
     set_seed(42)
+    best_weights = None
 
     print(f"\n🚀 Training started at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} on {DEVICE}")
 
@@ -109,7 +112,7 @@ def main_epoch_wise():
                         {"fraction": 1.00, "img_size": 224, "batch_size": 512,  "epochs": 10, "lr_scale": 0.7, "use_mixup": True, "freeze_to": None},
 
                         # Stage 4 — Freeze earlier blocks (stabilize deeper learning)
-                        {"fraction": 1.00, "img_size": 224, "batch_size": 512,  "epochs": 10, "lr_scale": 0.55, "use_mixup": False, "freeze_to": "layer2"},
+                        {"fraction": 1.00, "img_size": 224, "batch_size": 512,  "epochs": 10, "lr_scale": 0.55, "use_mixup": True, "freeze_to": "layer2"},
 
                         # Stage 5 — Final fine-tuning, larger batch, low LR
                         {"fraction": 1.00, "img_size": 224, "batch_size": 512, "epochs": 8, "lr_scale": 0.4, "use_mixup": False, "freeze_to": "layer3"},
@@ -124,18 +127,19 @@ def main_epoch_wise():
             #     {"fraction": 0.25, "img_size": 64, "batch_size": 128, "epochs": 3, "lr_scale": 0.4,"use_mixup":False, "freeze_to": "layer4"}, # Final fine-tune "batch_size": 256 20
             # ]
         else:
-            TRAIN_STAGES = [
-                {"fraction": 0.50, "img_size": 128, "batch_size": 1024, "epochs": 10, "lr_scale": 1.0,"use_mixup":True},  # Fast warmup "batch_size": 1024 15
-                {"fraction": 0.75, "img_size": 160, "batch_size": 768, "epochs": 15, "lr_scale": 0.8,"use_mixup":True},  # Mid-scale refinement "batch_size": 768 15
-                {"fraction": 1.00, "img_size": 224, "batch_size": 512, "epochs": 20, "lr_scale": 0.6,"use_mixup":True},   # Full fine-tune "batch_size": 512 20
-                {"fraction": 1.00, "img_size": 224, "batch_size": 256, "epochs": 5, "lr_scale": 0.4,"use_mixup":False},   # Full fine-tune "batch_size": 512 20
-            ]
             # TRAIN_STAGES = [
-            #     {"fraction": 0.25, "img_size": 64, "batch_size": 512 , "epochs": 3, "lr_scale": 1.0,"use_mixup":True},  # Fast warmup "batch_size": 1024 15
-            #     {"fraction": 0.25, "img_size": 64, "batch_size": 256, "epochs": 3, "lr_scale": 0.8,"use_mixup":True},  # Mid-scale refinement "batch_size": 768 15
-            #     {"fraction": 0.25, "img_size": 64, "batch_size": 128, "epochs": 3, "lr_scale": 0.6,"use_mixup":True},   # Full fine-tune "batch_size": 512 20
-            #     {"fraction": 0.25, "img_size": 64, "batch_size": 128, "epochs": 3, "lr_scale": 0.4,"use_mixup":False},   # Full fine-tune "batch_size": 512 20
+            #     {"fraction": 0.50, "img_size": 128, "batch_size": 1024, "epochs": 15, "lr_scale": 1.0,"use_mixup":True},  # Fast warmup "batch_size": 1024 15
+            #     {"fraction": 0.75, "img_size": 160, "batch_size": 768, "epochs": 25, "lr_scale": 0.8,"use_mixup":True},  # Mid-scale refinement "batch_size": 768 15
+            #     {"fraction": 1.00, "img_size": 224, "batch_size": 512, "epochs": 20, "lr_scale": 0.6,"use_mixup":True},   # Full fine-tune "batch_size": 512 20
+            #     {"fraction": 1.00, "img_size": 224, "batch_size": 256, "epochs": 5, "lr_scale": 0.4,"use_mixup":False},   # Full fine-tune "batch_size": 512 20
             # ]
+            TRAIN_STAGES = [
+                {"fraction": 0.40, "img_size": 128, "batch_size": 1024, "epochs": 15, "lr_scale": 1.0,"use_mixup":True},  # Fast warmup "batch_size": 1024 15
+                {"fraction": 0.60, "img_size": 160, "batch_size": 768, "epochs": 15, "lr_scale": 0.8,"use_mixup":True},  # Mid-scale refinement "batch_size": 768 15
+                {"fraction": 0.80, "img_size": 224, "batch_size": 512, "epochs": 15, "lr_scale": 0.6,"use_mixup":True},   # Full fine-tune "batch_size": 512 20
+                {"fraction": 1.00, "img_size": 224, "batch_size": 256, "epochs": 15, "lr_scale": 0.4,"use_mixup":True},   # Full fine-tune "batch_size": 512 20
+                {"fraction": 1.00, "img_size": 224, "batch_size": 256, "epochs": 10, "lr_scale": 0.2,"use_mixup":False},
+            ]
         # NUM_EPOCHS = sum(stage["epochs"] for stage in TRAIN_STAGES)
     else:
         TRAIN_STAGES = [
@@ -184,7 +188,7 @@ def main_epoch_wise():
     if ENABLE_LR_FINDER:
         use_lr = find_lr(model, optimizer, criterion, DEVICE, train_loader = train_loader,
                          plots_dir=PLOTS_DIR, image_name="lr_finder_plot.png",
-                          start_lr=1e-6, end_lr=1, num_iter=100)
+                          start_lr=1e-5, end_lr=1, num_iter=300)
     else:   
         use_lr = 0.1 #Hardcoded for now 
     print(f"Final Selected LR → {use_lr:.6f}")
@@ -227,7 +231,7 @@ def main_epoch_wise():
         )
     else:
         total_steps = get_total_steps_stagewise(train_loader, stage_cfg)
-        scheduler = create_onecycle_scheduler(
+        scheduler = create_onecycle_scheduler_stage_wise(
             optimizer=optimizer,
             max_lr=use_lr,
             train_loader_len=total_steps,
@@ -287,10 +291,20 @@ def main_epoch_wise():
                     fraction=stage_cfg["fraction"]
                 )
                 if ENABLE_STAGE_WISE_SCHEDULER:
+                    if ENABLE_LOAD_BEST_WEIGHTS_STAGE_WISE:
+                        try:
+                            if best_weights:
+                                model.load_state_dict(best_weights)
+                                print("print_best_weight loaded")
+                            else:
+                                model = load_best_weights(model, checkpoint_path= SAVE_BEST)
+                        except Exception as e:
+                            print(e)
+                            print("best weights not loaded!!!!")
                     if ENABLE_LR_FINDER:
                         use_lr = find_lr(model, optimizer, criterion, DEVICE, train_loader = train_loader,
                                          plots_dir=PLOTS_DIR, image_name=f"lr_finder_plot_stage_{current_stage}.png",
-                                          start_lr=1e-6, end_lr=1, num_iter=100)
+                                          start_lr=1e-5, end_lr=1, num_iter=300)
                     # Optional LR dampening
                     elif ENABLE_LR_DAMPENING:
                         base_lr = 0.1
@@ -300,13 +314,14 @@ def main_epoch_wise():
                             print(f"Dampened LR: {g['lr']:.6f}")
                         use_lr = optimizer.param_groups[0]["lr"]
                     else:
+                        # base_lr = 0.1
                         # scale lr by batch size (linear rule) OR apply dampening
                         base_batch = TRAIN_STAGES[0]["batch_size"]
                         use_lr = use_lr * (stage_cfg["batch_size"] / base_batch)
                         print(f"Scaled LR: {use_lr:.6f}")
                     print(f"Using LR: {use_lr:.6f} for stage {current_stage+1}")
                     total_steps = get_total_steps_stagewise(train_loader, stage_cfg)
-                    scheduler = create_onecycle_scheduler(
+                    scheduler = create_onecycle_scheduler_stage_wise(
                         optimizer, max_lr=use_lr,
                         train_loader_len=len(train_loader),
                         epochs=stage_cfg["epochs"]
@@ -323,11 +338,12 @@ def main_epoch_wise():
                         print(f"Using LR: {use_lr:.6f} for stage {current_stage+1}")
                         print(f"Total Steps: {total_steps}")
 
-        scaler, history, best_acc= train_validate_save_weights_history_plots(
+        scaler, history, best_acc,best_weights = train_validate_save_weights_history_plots(
                                                                             model, train_loader, val_loader, optimizer, 
                                                                             criterion, scheduler, scaler, mixup_fn,  ema, num_classes, 
                                                                             PLOTS_DIR, SAVE_BEST, SAVE_LAST, TXT_LOG_FILE, 
-                                                                            epoch, best_acc, history, use_lr, CSV_LOG_FILE, NUM_EPOCHS,
+                                                                            epoch, best_acc, best_weights,
+                                                                            history, use_lr, CSV_LOG_FILE, NUM_EPOCHS,
                                                                             enable_last_channel = ENABLE_CHANNEL_LAST, device = DEVICE)
         # stats = get_gpu_usage(device=DEVICE)
         # print(f"GPU Usage after epoch {epoch+1}: {stats}")
