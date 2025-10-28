@@ -13,6 +13,7 @@ Hybrid training pipeline combining:
 import os
 import time
 import math
+from typing import Any
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -86,6 +87,7 @@ def main_epoch_wise():
 
     set_seed(42)
     best_weights = None
+    resume = None
 
     print(f"\n🚀 Training started at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} on {DEVICE}")
 
@@ -249,6 +251,14 @@ def main_epoch_wise():
         start_epoch, best_acc, history = load_checkpoint(
             SAVE_LAST, model, optimizer, scheduler, scaler, device=DEVICE
         )
+        for current_stage, stage_cfg in enumerate(TRAIN_STAGES):
+            stage_end = sum(s["epochs"] for s in TRAIN_STAGES[:current_stage + 1])
+            if start_epoch <= stage_end:
+                resume = True
+                break
+            else:
+                pass
+
     else:
         start_epoch, best_acc, history = 0, 0.0, {"train_loss": [], "val_loss": [], "train_acc": [], "val_acc": [], "lr": [],
                   "mom": [] , "train_time": [], "val_time": [], "time_lapsed": [], "total_time_epoch": []}
@@ -262,16 +272,17 @@ def main_epoch_wise():
     # ============================================================
     # 🧠 TRAINING LOOP (Hybrid Progressive)
     # ============================================================
-    current_stage = 0
-    stage_cfg = TRAIN_STAGES[current_stage]
+    # current_stage = 0
+    # stage_cfg = TRAIN_STAGES[current_stage]
     for epoch in range(start_epoch, NUM_EPOCHS):
         # ---------------------------------------
         # Stage Transition Check
         # ---------------------------------------
         if current_stage < len(TRAIN_STAGES) - 1:
             stage_end = sum(s["epochs"] for s in TRAIN_STAGES[:current_stage + 1])
-            if epoch >= stage_end:
-                current_stage += 1
+            if epoch >= stage_end or resume:
+                if epoch >= stage_end:
+                    current_stage += 1
                 stage_cfg = TRAIN_STAGES[current_stage]
                 if USE_MIXUP or stage_cfg["use_mixup"]:
                     criterion = nn.CrossEntropyLoss()
