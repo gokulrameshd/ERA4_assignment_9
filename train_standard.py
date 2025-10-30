@@ -9,6 +9,7 @@ End-to-end ResNet-34 training pipeline with:
 ✅ Dynamic live plots (Acc/Loss/LR/Momentum)
 ✅ Best & Last weights saving
 ✅ Smart LR auto-scaling from LR Finder
+✅ S3 Checkpoint Uploading (from s3_utils)
 Optimized: TF32, torch.compile, modern torch.amp usage
 """
 
@@ -21,6 +22,7 @@ import torch.optim as optim
 import torch.multiprocessing as mp
 from datetime import datetime
 import matplotlib.pyplot as plt
+# import boto3  # <-- CHANGED (No longer needed here)
 
 from data_loader import get_dataloaders, set_seed, get_mixup_fn
 from model import create_model
@@ -30,11 +32,14 @@ from torch.amp import GradScaler
 from train_test_modules import train_one_epoch_imagenet, validate_imagenet, save_plot, save_checkpoint, load_checkpoint,ModelEMA
 from lr_finder_custom import LRFinder
 
+# --- S3 HELPER IMPORT ---
+from s3_utils import init_s3_client, upload_file_to_s3 # <-- CHANGED
+
 # ==============================================================
 # ⚙️ CONFIG
 # ==============================================================
 # DATA_DIR = "/home/deep/Documents/jeba/Classification_R_D/res/data"
-DATA_DIR = "./sample_data"
+DATA_DIR = "/opt/dlami/nvme/imagenet-1k"  # <--- !! MAKE SURE THIS IS CORRECT !!
 BATCH_SIZE = 512
 IMG_SIZE = 224
 NUM_EPOCHS = 50
@@ -50,6 +55,19 @@ ENABLE_LR_FINDER = False
 SAVE_FREQ_LAST = 5   # only overwrite last_weights every N epochs (reduce IO)
 ENABLE_EMA = False
 ENABLE_CHANNEL_LAST = True
+
+# ==============================================================
+# ⚙️ S3 CHECKPOINT CONFIG (Now much cleaner)
+# ==============================================================
+ENABLE_S3_UPLOAD = True # Set to False to disable S3 uploads
+S3_BUCKET_NAME = "s9-imagenet-checkpoint" # <--- !! YOUR BUCKET !!
+S3_ROOT_FOLDER = "standard-run-1"         # <--- Name this experiment
+
+s3_client = None # <-- CHANGED
+if ENABLE_S3_UPLOAD:
+    s3_client = init_s3_client(S3_BUCKET_NAME, S3_ROOT_FOLDER) # <-- CHANGED
+# --- END OF S3 BLOCK ---
+
 os.makedirs(PLOTS_DIR, exist_ok=True)
 
 # Performance flags
@@ -225,19 +243,53 @@ def main():
         val_loss = val_results["loss"]
         val_acc = val_results["acc"]
         val_time = val_results["time"]
-         # ---- SAVE MODELS ----
+        
+        # ==============================================================
+        # ⬇️ SAVE MODELS & UPLOAD TO S3 ⬇️
+        # ==============================================================
+        
+        # 1. Check for new best model
         if val_acc > best_acc:
             best_acc = val_acc
-            torch.save(model.state_dict(), SAVE_BEST)
-            # save_checkpoint(epoch, model, optimizer, scheduler, scaler, best_acc, history,
-            #             path=SAVE_BEST)
             print(f"New Best Accuracy: {best_acc*100:.2f}% (saved as {SAVE_BEST})\033[0m")
             with open(TXT_LOG_FILE, "a") as log:
                 log.write(f"New Best Accuracy: {best_acc*100:.2f}% (saved as {SAVE_BEST})\033[0m \n")
+            
+            # Save best model locally
+            torch.save(model.state_dict(), SAVE_BEST)
+            
+            # <-- CHANGED: Use helper function to upload best_weights.pth
+            upload_file_to_s3(
+                s3_client=s3_client,
+                local_file_path=SAVE_BEST,
+                bucket_name=S3_BUCKET_NAME,
+                s3_key=f"{S3_ROOT_FOLDER}/best_weights.pth"
+            )
 
-        # torch.save(model.state_dict(), SAVE_LAST)
-        save_checkpoint(epoch, model, optimizer, scheduler, scaler, best_acc, history,
-                        path=SAVE_LAST)
+        # 2. Save 'last_weights.pth' (full checkpoint)
+        if (epoch + 1) % SAVE_FREQ_LAST == 0 or (epoch + 1) == NUM_EPOCHS:
+            print(f"Saving 'last' checkpoint at epoch {epoch+1}...")
+            save_checkpoint(epoch, model, optimizer, scheduler, scaler, best_acc, history,
+                            path=SAVE_LAST)
+            
+            # <-- CHANGED: Use helper function to upload last_weights.pth
+            upload_file_to_s3(
+                s3_client=s3_client,
+                local_file_path=SAVE_LAST,
+                bucket_name=S3_BUCKET_NAME,
+                s3_key=f"{S3_ROOT_FOLDER}/last_weights.pth"
+            )
+
+        # 3. (Bonus) Upload the CSV log file every epoch
+        # <-- CHANGED: Use helper function to upload training_log.csv
+        upload_file_to_s3(
+            s3_client=s3_client,
+            local_file_path=CSV_LOG_FILE,
+            bucket_name=S3_BUCKET_NAME,
+            s3_key=f"{S3_ROOT_FOLDER}/training_log.csv"
+        )
+        # --- END OF S3 BLOCK ---
+
         # ---------------------------------------
         # Log stats
         # ---------------------------------------
@@ -309,6 +361,16 @@ def main():
             f"🖼️ Live plots in: {PLOTS_DIR}\n"
             f"🏁 Training Time: {history['time_lapsed'][-1]:.2f}m\n"
         )
+    
+    # --- FINAL S3 UPLOAD BLOCK ---
+    # <-- CHANGED: Use helper function to upload final training_log.txt
+    upload_file_to_s3(
+        s3_client=s3_client,
+        local_file_path=TXT_LOG_FILE,
+        bucket_name=S3_BUCKET_NAME,
+        s3_key=f"{S3_ROOT_FOLDER}/training_log.txt"
+    )
+    # --- END OF FINAL S3 BLOCK ---
 
 if __name__ == "__main__":
     main()
