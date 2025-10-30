@@ -42,7 +42,7 @@ from s3_utils import init_s3_client, upload_file_to_s3 # <-- CHANGED
 DATA_DIR = "/opt/dlami/nvme/imagenet-1k"  # <--- !! MAKE SURE THIS IS CORRECT !!
 BATCH_SIZE = 512
 IMG_SIZE = 224
-NUM_EPOCHS = 50
+NUM_EPOCHS = 80
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 ROOT_DIR = "standard_train"
 SAVE_BEST = f"./{ROOT_DIR}/best_weights.pth"
