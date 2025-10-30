@@ -8,6 +8,7 @@ Hybrid training pipeline combining:
 ✅ EMA (Exponential Moving Average)
 ✅ Channel-last memory format
 ✅ Advanced checkpointing and logging
+✅ S3 Checkpoint Uploading
 """
 
 import os
@@ -20,7 +21,7 @@ import torch.optim as optim
 import torch.multiprocessing as mp
 from datetime import datetime
 import matplotlib.pyplot as plt
-
+import boto3  # <--- ADDED FOR S3
 from data_loader import get_dataloaders, set_seed, get_mixup_fn, get_total_steps_stagewise,get_total_steps,compute_total_steps
 from model import create_model
 from hyper_parameter_modules import create_onecycle_scheduler, create_onecycle_scheduler_global,create_onecycle_scheduler_stage_wise
@@ -59,7 +60,26 @@ ENABLE_LOAD_BEST_WEIGHTS_STAGE_WISE = False
 ENABLE_PROGRESSIVE_UNFREEZING = False
 ENABLE_PROGRESSIVE_FREEZING = False
 
+# ==============================================================
+# ⚙️ S3 CHECKPOINT CONFIG
+# ==============================================================
+ENABLE_S3_UPLOAD = True # Set to False to disable S3 uploads
+S3_BUCKET_NAME = "s9-imagenet-checkpoint" # <--- !! CHANGE THIS !!
+S3_ROOT_FOLDER = "hybrid-run-1"                             # <--- Name this experiment
+# Initialize S3 client
+s3_client = None
+if ENABLE_S3_UPLOAD:
+    try:
+        # This automatically uses the IAM Role from your EC2 instance
+        s3_client = boto3.client('s3')
+        print(f"✅ S3 Uploads Enabled. Target: s3://{S3_BUCKET_NAME}/{S3_ROOT_FOLDER}")
+    except Exception as e:
+        print(f"⚠️ Failed to initialize S3 client. S3 uploads disabled. Error: {e}")
+        ENABLE_S3_UPLOAD = False
+# --- END OF S3 BLOCK ---
+# ==============================================================
 os.makedirs(PLOTS_DIR, exist_ok=True)
+
 
 # Performance flags
 torch.backends.cudnn.benchmark = True
@@ -360,7 +380,7 @@ def main_epoch_wise():
                                                             epochs=NUM_EPOCHS)
                         print(f"Using LR: {use_lr:.6f} for stage {current_stage+1}")
                         print(f"Total Steps: {total_steps}")
-
+        best_acc_before_epoch = best_acc
         scaler, history, best_acc,best_weights = train_validate_save_weights_history_plots(
                                                                             model, train_loader, val_loader, optimizer, 
                                                                             criterion, scheduler, scaler, mixup_fn,  ema, num_classes, 
@@ -368,6 +388,39 @@ def main_epoch_wise():
                                                                             epoch, best_acc, best_weights,
                                                                             history, use_lr, CSV_LOG_FILE, NUM_EPOCHS,
                                                                             enable_last_channel = ENABLE_CHANNEL_LAST, device = DEVICE)
+         # --- S3 UPLOAD BLOCK ---
+        if ENABLE_S3_UPLOAD and s3_client:
+            # 1. Upload 'last_weights.pth' (if it was saved this epoch)
+            if (epoch + 1) % SAVE_FREQ_LAST == 0 or (epoch + 1) == NUM_EPOCHS:
+                try:
+                    s3_key = f"{S3_ROOT_FOLDER}/last_weights.pth"
+                    print(f"Uploading last checkpoint to s3://{S3_BUCKET_NAME}/{s3_key}")
+                    s3_client.upload_file(
+                        Filename=SAVE_LAST,     # Local file path
+                        Bucket=S3_BUCKET_NAME,  # S3 bucket
+                        Key=s3_key              # Path in S3
+                    )
+                except Exception as e:
+                    print(f"⚠️ S3 upload failed for {SAVE_LAST}: {e}")
+            # 2. Upload 'best_weights.pth' (if it was just updated)
+            if best_acc > best_acc_before_epoch:
+                try:
+                    s3_key = f"{S3_ROOT_FOLDER}/best_weights.pth"
+                    print(f"🎉 New best model! Uploading to s3://{S3_BUCKET_NAME}/{s3_key}")
+                    s3_client.upload_file(
+                        Filename=SAVE_BEST,     # Local file path
+                        Bucket=S3_BUCKET_NAME,  # S3 bucket
+                        Key=s3_key              # Path in S3
+                    )
+                except Exception as e:
+                    print(f"⚠️ S3 upload failed for {SAVE_BEST}: {e}")
+            # 3. (Bonus) Upload the CSV log file every epoch
+            try:
+                s3_key_csv = f"{S3_ROOT_FOLDER}/training_log.csv"
+                s3_client.upload_file(CSV_LOG_FILE, S3_BUCKET_NAME, s3_key_csv)
+            except Exception as e:
+                print(f"⚠️ S3 upload failed for {CSV_LOG_FILE}: {e}")
+        # --- END OF S3 BLOCK ---
         # stats = get_gpu_usage(device=DEVICE)
         # print(f"GPU Usage after epoch {epoch+1}: {stats}")
     # -----------------------------------------------------------

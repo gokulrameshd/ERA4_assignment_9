@@ -124,10 +124,12 @@ def get_stage_transforms(img_size, use_mixup=True, stage_idx=0,has_gpu_transform
     return train_tf, val_tf
 
 
-def get_dataloaders(data_dir="data", batch_size=128, img_size=224, fraction=1.0,stage_index = None,use_mixup = True,use_stagewise_transforms = False,epoch = None):
+def get_dataloaders(data_dir="data", batch_size=128, img_size=224, fraction=1.0,stage_index = None,use_mixup = True,
+                    use_stagewise_transforms = False,epoch = None,distributed: bool = False):
     """Universal DataLoader setup.
     - Uses GPU transforms if torchvision v2 supports them
     - Falls back to CPU transforms otherwise
+    - If distributed=True, uses DistributedSampler and disables shuffle
     """
 
     num_workers = min(8, max(8, torch.get_num_threads() // 2))
@@ -139,11 +141,13 @@ def get_dataloaders(data_dir="data", batch_size=128, img_size=224, fraction=1.0,
         has_gpu_transforms = hasattr(v2, "ToDevice") and hasattr(v2, "ToDtype")
     except Exception:
         has_gpu_transforms = False
+
     if use_stagewise_transforms:
         if stage_index == None :
             if epoch != None:
                 stage_index = epoch//10
-        train_transforms,val_transforms = get_stage_transforms(img_size, use_mixup=use_mixup, stage_idx=stage_index, has_gpu_transforms=has_gpu_transforms)
+        train_transforms,val_transforms = get_stage_transforms(img_size, use_mixup=use_mixup, 
+                                                            stage_idx=stage_index, has_gpu_transforms=has_gpu_transforms)
     else:
         if has_gpu_transforms:
             print("⚡ Using GPU-accelerated torchvision.v2 transforms")
@@ -201,31 +205,45 @@ def get_dataloaders(data_dir="data", batch_size=128, img_size=224, fraction=1.0,
     else:
         train_dataset = base_dataset
 
+    # DDP sampler
+    train_sampler = None
+    val_sampler = None
+    if distributed:
+        train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset, drop_last=True)
+        val_sampler = torch.utils.data.distributed.DistributedSampler(val_dataset, shuffle=False, drop_last=False)
+        shuffle_train = False
+        shuffle_val = False
+    else:
+        shuffle_train = True
+        shuffle_val = False
+
     train_loader = DataLoader(
         train_dataset,
         batch_size=batch_size,
-        shuffle=True,
+        shuffle=shuffle_train,
         num_workers=num_workers,
         pin_memory=True,
         persistent_workers=True,
         prefetch_factor=4,
         drop_last=True,   # safe with mixup
+        sampler=train_sampler,
     )
 
     val_loader = DataLoader(
         val_dataset,
         batch_size=batch_size,
-        shuffle=False,
+        shuffle=shuffle_val,
         num_workers=num_workers,
         pin_memory=True,
         persistent_workers=True,
         prefetch_factor=4,
         drop_last=False,   # safe with mixup
+        sampler=val_sampler,
     )
 
     
     print(f"✅ Loaded dataset with {num_classes} classes using {num_workers} workers.")
-    return train_loader, val_loader, num_classes
+    return train_loader, val_loader, num_classes, train_sampler
 
 class SimpleMixup:
     def __init__(self, alpha=0.2, prob=1.0, num_classes=1000):
