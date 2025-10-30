@@ -68,9 +68,63 @@ def get_base_transforms():
         ])
     return train_base_transforms, val_base_transforms
 
+from torchvision.transforms import v2, InterpolationMode
+
+def get_stage_transforms(img_size, use_mixup=True, stage_idx=0,has_gpu_transforms=True):
+    """
+    Dynamically adapts transform strength based on stage.
+    """
+    # Progressive reduction in augmentation magnitude and erasing
+    aug_magnitude = max(5, 9 - stage_idx * 1.5)
+    erase_prob = max(0.05, 0.25 - stage_idx * 0.04)
+
+    color_jitter_strength = 0.4 if use_mixup else 0.2  # lighter if no mixup
+
+    if has_gpu_transforms:
+        print(f"⚡ Using GPU transforms — stage {stage_idx+1} | mag={aug_magnitude:.1f}, erase={erase_prob:.2f}")
+        train_tf = v2.Compose([
+            v2.RandomResizedCrop(img_size, interpolation=InterpolationMode.BICUBIC),
+            v2.RandomHorizontalFlip(p=0.5),
+            v2.RandAugment(num_ops=2, magnitude=int(aug_magnitude)),
+            v2.ColorJitter(color_jitter_strength, color_jitter_strength, color_jitter_strength, 0.1),
+            v2.RandomErasing(p=erase_prob, scale=(0.02, 0.33)),
+            v2.ToDtype(torch.float32, scale=True),
+            v2.Normalize(mean=[0.485, 0.456, 0.406],
+                         std=[0.229, 0.224, 0.225]),
+            v2.ToDevice(device="cuda"),
+        ])
+        val_tf = v2.Compose([
+            v2.Resize(int(img_size * 1.14), interpolation=InterpolationMode.BICUBIC),
+            v2.CenterCrop(img_size),
+            v2.ToDtype(torch.float32, scale=True),
+            v2.Normalize(mean=[0.485, 0.456, 0.406],
+                         std=[0.229, 0.224, 0.225]),
+            v2.ToDevice(device="cuda"),
+        ])
+    else:
+        print(f"🧠 Using CPU transforms — stage {stage_idx+1} | mag={aug_magnitude:.1f}, erase={erase_prob:.2f}")
+        train_tf = transforms.Compose([
+            transforms.RandomResizedCrop(img_size, interpolation=InterpolationMode.BICUBIC),
+            transforms.RandomHorizontalFlip(),
+            transforms.RandAugment(num_ops=2, magnitude=int(aug_magnitude)),
+            transforms.ColorJitter(color_jitter_strength, color_jitter_strength, color_jitter_strength, 0.1),
+            transforms.ToTensor(),
+            transforms.RandomErasing(p=erase_prob, scale=(0.02, 0.33)),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                                 std=[0.229, 0.224, 0.225]),
+        ])
+        val_tf = transforms.Compose([
+            transforms.Resize(int(img_size * 1.14), interpolation=InterpolationMode.BICUBIC),
+            transforms.CenterCrop(img_size),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                        std=[0.229, 0.224, 0.225]),
+        ])
+
+    return train_tf, val_tf
 
 
-def get_dataloaders(data_dir="data", batch_size=128, img_size=224, fraction=1.0):
+def get_dataloaders(data_dir="data", batch_size=128, img_size=224, fraction=1.0,stage_index = None,use_mixup = True,use_stagewise_transforms = False,epoch = None):
     """Universal DataLoader setup.
     - Uses GPU transforms if torchvision v2 supports them
     - Falls back to CPU transforms otherwise
@@ -85,49 +139,54 @@ def get_dataloaders(data_dir="data", batch_size=128, img_size=224, fraction=1.0)
         has_gpu_transforms = hasattr(v2, "ToDevice") and hasattr(v2, "ToDtype")
     except Exception:
         has_gpu_transforms = False
-
-    if has_gpu_transforms:
-        print("⚡ Using GPU-accelerated torchvision.v2 transforms")
-        train_transforms = v2.Compose([
-            v2.RandomResizedCrop(img_size, interpolation=transforms.InterpolationMode.BICUBIC),
-            v2.RandomHorizontalFlip(p=0.5),
-            v2.RandAugment(num_ops=2, magnitude=9),  # Core augment
-            v2.ColorJitter(0.4, 0.4, 0.4, 0.1),
-            v2.RandomErasing(p=0.25, scale=(0.02, 0.33)),
-            v2.ToDtype(torch.float32, scale=True),
-            v2.Normalize(mean=[0.485, 0.456, 0.406],
-                         std=[0.229, 0.224, 0.225]),
-            v2.ToDevice(device="cuda"),
-        ])
-
-        val_transforms = v2.Compose([
-            v2.Resize(int(img_size * 1.14), interpolation=transforms.InterpolationMode.BICUBIC),
-            v2.CenterCrop(img_size),
-            v2.ToDtype(torch.float32, scale=True),
-            v2.Normalize(mean=[0.485, 0.456, 0.406],
-                         std=[0.229, 0.224, 0.225]),
-            v2.ToDevice(device="cuda"),
-        ])
+    if use_stagewise_transforms:
+        if stage_index == None :
+            if epoch != None:
+                stage_index = epoch//10
+        train_transforms,val_transforms = get_stage_transforms(img_size, use_mixup=use_mixup, stage_idx=stage_index, has_gpu_transforms=has_gpu_transforms)
     else:
-        print("🧠 Using standard CPU transforms (no v2 GPU support detected)")
-        train_transforms = transforms.Compose([
-            transforms.RandomResizedCrop(img_size, interpolation=transforms.InterpolationMode.BICUBIC),
-            transforms.RandomHorizontalFlip(),
-            transforms.RandAugment(num_ops=2, magnitude=9),
-            transforms.ColorJitter(0.4, 0.4, 0.4, 0.1),
-            transforms.ToTensor(),
-            transforms.RandomErasing(p=0.25, scale=(0.02, 0.33)),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                                 std=[0.229, 0.224, 0.225]),
-        ])
+        if has_gpu_transforms:
+            print("⚡ Using GPU-accelerated torchvision.v2 transforms")
+            train_transforms = v2.Compose([
+                v2.RandomResizedCrop(img_size, interpolation=transforms.InterpolationMode.BICUBIC),
+                v2.RandomHorizontalFlip(p=0.5),
+                v2.RandAugment(num_ops=2, magnitude=9),  # Core augment
+                v2.ColorJitter(0.4, 0.4, 0.4, 0.1),
+                v2.RandomErasing(p=0.25, scale=(0.02, 0.33)),
+                v2.ToDtype(torch.float32, scale=True),
+                v2.Normalize(mean=[0.485, 0.456, 0.406],
+                            std=[0.229, 0.224, 0.225]),
+                v2.ToDevice(device="cuda"),
+            ])
 
-        val_transforms = transforms.Compose([
-            transforms.Resize(int(img_size * 1.14), interpolation=transforms.InterpolationMode.BICUBIC),
-            transforms.CenterCrop(img_size),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                        std=[0.229, 0.224, 0.225]),
-        ])
+            val_transforms = v2.Compose([
+                v2.Resize(int(img_size * 1.14), interpolation=transforms.InterpolationMode.BICUBIC),
+                v2.CenterCrop(img_size),
+                v2.ToDtype(torch.float32, scale=True),
+                v2.Normalize(mean=[0.485, 0.456, 0.406],
+                            std=[0.229, 0.224, 0.225]),
+                v2.ToDevice(device="cuda"),
+            ])
+        else:
+            print("🧠 Using standard CPU transforms (no v2 GPU support detected)")
+            train_transforms = transforms.Compose([
+                transforms.RandomResizedCrop(img_size, interpolation=transforms.InterpolationMode.BICUBIC),
+                transforms.RandomHorizontalFlip(),
+                transforms.RandAugment(num_ops=2, magnitude=9),
+                transforms.ColorJitter(0.4, 0.4, 0.4, 0.1),
+                transforms.ToTensor(),
+                transforms.RandomErasing(p=0.25, scale=(0.02, 0.33)),
+                transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                                    std=[0.229, 0.224, 0.225]),
+            ])
+
+            val_transforms = transforms.Compose([
+                transforms.Resize(int(img_size * 1.14), interpolation=transforms.InterpolationMode.BICUBIC),
+                transforms.CenterCrop(img_size),
+                transforms.ToTensor(),
+                transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                            std=[0.229, 0.224, 0.225]),
+            ])
 
     # Create datasets and loaders
     base_dataset = datasets.ImageFolder(os.path.join(data_dir, "train"), train_transforms)

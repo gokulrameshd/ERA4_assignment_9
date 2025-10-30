@@ -676,6 +676,29 @@ def _set_trainable_layers(model, mode, target_layer=None):
             for n, p in model.layer1.named_parameters(): p.requires_grad = False
             print("Freezing layer1")
 
+def recreate_optimizer(model, base_lr, weight_decay=1e-4, momentum=0.9):
+    # Only include trainable params
+    params = [p for p in model.parameters() if p.requires_grad]
+    optimizer = torch.optim.SGD(params, lr=base_lr, momentum=momentum, weight_decay=weight_decay)
+    print(f"✅ Recreated optimizer with {len(params)} trainable parameter tensors")
+    return optimizer
+
+def forward_with_freeze(model, x):
+    with torch.no_grad():
+        x = model.layer1(x)
+        x = model.layer2(x)
+    x = model.layer3(x)
+    x = model.layer4(x)
+    x = model.avgpool(x)
+    x = torch.flatten(x, 1)
+    x = model.fc(x)
+    return x
+
+def disable_grad_for_frozen_layers(model):
+    for name, module in model.named_children():
+        if all(not p.requires_grad for p in module.parameters()):
+            module.forward = torch.no_grad()(module.forward)
+            
 def set_trainable_layers(model, mode, target_layer):
     freeze_map = {
         "layer1": [model.layer1],
