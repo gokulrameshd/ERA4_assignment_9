@@ -8,6 +8,7 @@ Hybrid training pipeline combining:
 ✅ EMA (Exponential Moving Average)
 ✅ Channel-last memory format
 ✅ Advanced checkpointing and logging
+✅ S3 Checkpoint Uploading
 """
 
 import os
@@ -20,6 +21,7 @@ import torch.optim as optim
 import torch.multiprocessing as mp
 from datetime import datetime
 import matplotlib.pyplot as plt
+import boto3  # <--- ADDED FOR S3
 
 from data_loader import get_dataloaders, set_seed, get_mixup_fn, get_total_steps_stagewise,get_total_steps,compute_total_steps
 from model import create_model
@@ -49,7 +51,7 @@ CSV_LOG_FILE = f"./{ROOT_DIR}/training_log.csv"
 TXT_LOG_FILE = f"./{ROOT_DIR}/training_log.txt"
 PLOTS_DIR = f"./{ROOT_DIR}/plots"
 USE_MIXUP = True
-SAVE_FREQ_LAST = 5   # only overwrite last_weights every N epochs (reduce IO)
+SAVE_FREQ_LAST = 5    # only overwrite last_weights every N epochs (reduce IO)
 ENABLE_LR_FINDER = False
 ENABLE_EMA = False
 ENABLE_CHANNEL_LAST = True
@@ -58,6 +60,25 @@ ENABLE_STAGE_WISE_SCHEDULER = True
 ENABLE_LOAD_BEST_WEIGHTS_STAGE_WISE = True
 ENABLE_PROGRESSIVE_UNFREEZING = False
 ENABLE_PROGRESSIVE_FREEZING = False
+
+# ==============================================================
+# ⚙️ S3 CHECKPOINT CONFIG
+# ==============================================================
+ENABLE_S3_UPLOAD = True # Set to False to disable S3 uploads
+S3_BUCKET_NAME = "s9-imagenet-checkpoint" # <--- !! CHANGE THIS !!
+S3_ROOT_FOLDER = "hybrid-run-1"                             # <--- Name this experiment
+
+# Initialize S3 client
+s3_client = None
+if ENABLE_S3_UPLOAD:
+    try:
+        # This automatically uses the IAM Role from your EC2 instance
+        s3_client = boto3.client('s3')
+        print(f"✅ S3 Uploads Enabled. Target: s3://{S3_BUCKET_NAME}/{S3_ROOT_FOLDER}")
+    except Exception as e:
+        print(f"⚠️ Failed to initialize S3 client. S3 uploads disabled. Error: {e}")
+        ENABLE_S3_UPLOAD = False
+# --- END OF S3 BLOCK ---
 
 os.makedirs(PLOTS_DIR, exist_ok=True)
 
@@ -104,45 +125,32 @@ def main_epoch_wise():
                         ]
         elif ENABLE_PROGRESSIVE_FREEZING:
             TRAIN_STAGES = [
-                        # Stage 1 — Fast feature warmup (edges/textures)
-                        {"fraction": 0.50, "img_size": 128, "batch_size": 1024, "epochs": 8, "lr_scale": 1.0, "use_mixup": True, "freeze_to": None},
+                            # Stage 1 — Fast feature warmup (edges/textures)
+                            {"fraction": 0.50, "img_size": 128, "batch_size": 1024, "epochs": 8, "lr_scale": 1.0, "use_mixup": True, "freeze_to": None},
 
-                        # Stage 2 — Mid-level refinement
-                        {"fraction": 0.75, "img_size": 160, "batch_size": 768,  "epochs": 8, "lr_scale": 0.85, "use_mixup": True, "freeze_to": None},
+                            # Stage 2 — Mid-level refinement
+                            {"fraction": 0.75, "img_size": 160, "batch_size": 768,  "epochs": 8, "lr_scale": 0.85, "use_mixup": True, "freeze_to": None},
 
-                        # Stage 3 — Full data fine-tuning (high res, still all layers trainable)
-                        {"fraction": 1.00, "img_size": 224, "batch_size": 512,  "epochs": 10, "lr_scale": 0.7, "use_mixup": True, "freeze_to": None},
+                            # Stage 3 — Full data fine-tuning (high res, still all layers trainable)
+                            {"fraction": 1.00, "img_size": 224, "batch_size": 512,  "epochs": 10, "lr_scale": 0.7, "use_mixup": True, "freeze_to": None},
 
-                        # Stage 4 — Freeze earlier blocks (stabilize deeper learning)
-                        {"fraction": 1.00, "img_size": 224, "batch_size": 512,  "epochs": 10, "lr_scale": 0.55, "use_mixup": True, "freeze_to": "layer2"},
+                            # Stage 4 — Freeze earlier blocks (stabilize deeper learning)
+                            {"fraction": 1.00, "img_size": 224, "batch_size": 512,  "epochs": 10, "lr_scale": 0.55, "use_mixup": True, "freeze_to": "layer2"},
 
-                        # Stage 5 — Final fine-tuning, larger batch, low LR
-                        {"fraction": 1.00, "img_size": 224, "batch_size": 512, "epochs": 8, "lr_scale": 0.4, "use_mixup": False, "freeze_to": "layer3"},
+                            # Stage 5 — Final fine-tuning, larger batch, low LR
+                            {"fraction": 1.00, "img_size": 224, "batch_size": 512, "epochs": 8, "lr_scale": 0.4, "use_mixup": False, "freeze_to": "layer3"},
 
-                        # Stage 6 — Final fine-tuning, larger batch, low LR
-                        {"fraction": 1.00, "img_size": 224, "batch_size": 512, "epochs": 6, "lr_scale": 0.25, "use_mixup": False, "freeze_to": "layer4"},
+                            # Stage 6 — Final fine-tuning, larger batch, low LR
+                            {"fraction": 1.00, "img_size": 224, "batch_size": 512, "epochs": 6, "lr_scale": 0.25, "use_mixup": False, "freeze_to": "layer4"},
                         ]
-            # TRAIN_STAGES = [
-            #     {"fraction": 0.25, "img_size": 64, "batch_size": 512 , "epochs": 3, "lr_scale": 1.0,"use_mixup":True, "freeze_to": None},  # Fast warmup "batch_size": 1024 15
-            #     {"fraction": 0.25, "img_size": 64, "batch_size": 256, "epochs": 3, "lr_scale": 0.6,"use_mixup":False, "freeze_to": "layer2"},   # Full fine-tune "batch_size": 512 20
-            #     {"fraction": 0.25, "img_size": 64, "batch_size": 512, "epochs": 3, "lr_scale": 0.5,"use_mixup":False, "freeze_to": "layer3"}, # Final fine-tune "batch_size": 256 20
-            #     {"fraction": 0.25, "img_size": 64, "batch_size": 128, "epochs": 3, "lr_scale": 0.4,"use_mixup":False, "freeze_to": "layer4"}, # Final fine-tune "batch_size": 256 20
-            # ]
         else:
-            # TRAIN_STAGES = [
-            #     {"fraction": 0.50, "img_size": 128, "batch_size": 1024, "epochs": 15, "lr_scale": 1.0,"use_mixup":True},  # Fast warmup "batch_size": 1024 15
-            #     {"fraction": 0.75, "img_size": 160, "batch_size": 768, "epochs": 25, "lr_scale": 0.8,"use_mixup":True},  # Mid-scale refinement "batch_size": 768 15
-            #     {"fraction": 1.00, "img_size": 224, "batch_size": 512, "epochs": 20, "lr_scale": 0.6,"use_mixup":True},   # Full fine-tune "batch_size": 512 20
-            #     {"fraction": 1.00, "img_size": 224, "batch_size": 256, "epochs": 5, "lr_scale": 0.4,"use_mixup":False},   # Full fine-tune "batch_size": 512 20
-            # ]
             TRAIN_STAGES = [
-                {"fraction": 0.40, "img_size": 128, "batch_size": 1024, "epochs": 15, "lr_scale": 1.0,"use_mixup":True},  # Fast warmup "batch_size": 1024 15
-                {"fraction": 0.60, "img_size": 160, "batch_size": 768, "epochs": 15, "lr_scale": 0.8,"use_mixup":True},  # Mid-scale refinement "batch_size": 768 15
-                {"fraction": 0.80, "img_size": 224, "batch_size": 512, "epochs": 15, "lr_scale": 0.6,"use_mixup":True},   # Full fine-tune "batch_size": 512 20
-                {"fraction": 1.00, "img_size": 224, "batch_size": 256, "epochs": 15, "lr_scale": 0.4,"use_mixup":True},   # Full fine-tune "batch_size": 512 20
-                {"fraction": 1.00, "img_size": 224, "batch_size": 256, "epochs": 10, "lr_scale": 0.2,"use_mixup":False},
+                    {"fraction": 0.40, "img_size": 128, "batch_size": 1024, "epochs": 15, "lr_scale": 1.0,"use_mixup":True},  # Fast warmup "batch_size": 1024 15
+                    {"fraction": 0.60, "img_size": 160, "batch_size": 768, "epochs": 15, "lr_scale": 0.8,"use_mixup":True},  # Mid-scale refinement "batch_size": 768 15
+                    {"fraction": 0.80, "img_size": 224, "batch_size": 512, "epochs": 15, "lr_scale": 0.6,"use_mixup":True},   # Full fine-tune "batch_size": 512 20
+                    {"fraction": 1.00, "img_size": 224, "batch_size": 256, "epochs": 15, "lr_scale": 0.4,"use_mixup":True},   # Full fine-tune "batch_size": 512 20
+                    {"fraction": 1.00, "img_size": 224, "batch_size": 256, "epochs": 10, "lr_scale": 0.2,"use_mixup":False},
             ]
-        # NUM_EPOCHS = sum(stage["epochs"] for stage in TRAIN_STAGES)
     else:
         TRAIN_STAGES = [
                 {"fraction": 1.0, "img_size": 224, "batch_size": 512, "epochs": 60, "lr_scale": 1.0},
@@ -156,7 +164,7 @@ def main_epoch_wise():
     print(f"\n📦 Stage 1 — {int(stage_cfg['fraction']*100)}% data | {stage_cfg['img_size']}px | batch={stage_cfg['batch_size']}")
 
     train_loader, val_loader, num_classes = get_dataloaders(DATA_DIR, stage_cfg["batch_size"],
-                                                             stage_cfg["img_size"], fraction=stage_cfg["fraction"])
+                                                            stage_cfg["img_size"], fraction=stage_cfg["fraction"])
     # -----------------------------------------------------------
     # 🧠 Model setup
     model = create_model(num_classes=num_classes, pretrained=False).to(DEVICE)
@@ -184,13 +192,11 @@ def main_epoch_wise():
     # -----------------------------------------------------------
     # 🔍 LR Finder
     print("\n🔍 Running Learning Rate Finder...")
-    # Use a small temp optimizer copy and model copy to run LR finder without altering original optimizer
-    # We use the model and optimizer provided (lr_finder will cache & reset)
     
     if ENABLE_LR_FINDER:
         use_lr = find_lr(model, optimizer, criterion, DEVICE, train_loader = train_loader,
-                         plots_dir=PLOTS_DIR, image_name="lr_finder_plot.png",
-                          start_lr=1e-5, end_lr=1, num_iter=300)
+                            plots_dir=PLOTS_DIR, image_name="lr_finder_plot.png",
+                            start_lr=1e-5, end_lr=1, num_iter=300)
     else:   
         use_lr = 0.1 #Hardcoded for now 
     print(f"Final Selected LR → {use_lr:.6f}")
@@ -222,7 +228,6 @@ def main_epoch_wise():
     optimizer = optim.SGD(model.parameters(), lr=use_lr, momentum=0.9, weight_decay=1e-5)
     # -----------------------------------------------------------
     if not ENABLE_STAGE_WISE_SCHEDULER :
-        # total_steps = get_total_steps(DATA_DIR, stages=TRAIN_STAGES)
         total_steps = compute_total_steps(DATA_DIR, stages=TRAIN_STAGES)
         # 🌀 OneCycleLR Scheduler (per step)
         scheduler = create_onecycle_scheduler_global(
@@ -261,7 +266,7 @@ def main_epoch_wise():
 
     else:
         start_epoch, best_acc, history = 0, 0.0, {"train_loss": [], "val_loss": [], "train_acc": [], "val_acc": [], "lr": [],
-                  "mom": [] , "train_time": [], "val_time": [], "time_lapsed": [], "total_time_epoch": []}
+            "mom": [] , "train_time": [], "val_time": [], "time_lapsed": [], "total_time_epoch": []}
     print(f"🚀 Starting new training run from epoch {start_epoch}.")
 
 
@@ -272,8 +277,6 @@ def main_epoch_wise():
     # ============================================================
     # 🧠 TRAINING LOOP (Hybrid Progressive)
     # ============================================================
-    # current_stage = 0
-    # stage_cfg = TRAIN_STAGES[current_stage]
     for epoch in range(start_epoch, NUM_EPOCHS):
         # ---------------------------------------
         # Stage Transition Check
@@ -290,7 +293,7 @@ def main_epoch_wise():
                     criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
                     mixup_fn = None
                 print(f"\n📈 Switching to Stage {current_stage + 1} → "
-                      f"{int(stage_cfg['fraction']*100)}% data | {stage_cfg['img_size']}px | batch={stage_cfg['batch_size']}")
+                        f"{int(stage_cfg['fraction']*100)}% data | {stage_cfg['img_size']}px | batch={stage_cfg['batch_size']}")
                 if ENABLE_PROGRESSIVE_UNFREEZING:
                     set_trainable_layers(model, "unfreeze", stage_cfg["unfreeze_to"])
                     optimizer = build_optimizer(model, use_lr, weight_decay=1e-4, momentum=0.9)
@@ -314,19 +317,16 @@ def main_epoch_wise():
                             print("best weights not loaded!!!!")
                     if ENABLE_LR_FINDER:
                         use_lr = find_lr(model, optimizer, criterion, DEVICE, train_loader = train_loader,
-                                         plots_dir=PLOTS_DIR, image_name=f"lr_finder_plot_stage_{current_stage}.png",
-                                          start_lr=1e-5, end_lr=1, num_iter=300)
+                                            plots_dir=PLOTS_DIR, image_name=f"lr_finder_plot_stage_{current_stage}.png",
+                                            start_lr=1e-5, end_lr=1, num_iter=300)
                     # Optional LR dampening
                     elif ENABLE_LR_DAMPENING:
                         base_lr = 0.1
                         for g in optimizer.param_groups:
-                            # g["lr"] *= stage_cfg["lr_scale"]
                             g["lr"] =base_lr * stage_cfg["lr_scale"]
                             print(f"Dampened LR: {g['lr']:.6f}")
                         use_lr = optimizer.param_groups[0]["lr"]
                     else:
-                        # base_lr = 0.1
-                        # scale lr by batch size (linear rule) OR apply dampening
                         base_batch = TRAIN_STAGES[0]["batch_size"]
                         use_lr = use_lr * (stage_cfg["batch_size"] / base_batch)
                         print(f"Scaled LR: {use_lr:.6f}")
@@ -342,22 +342,61 @@ def main_epoch_wise():
                         total_steps = compute_total_steps(DATA_DIR, stages=TRAIN_STAGES)
                         # 🌀 OneCycleLR Scheduler (per step)
                         scheduler = create_onecycle_scheduler_global(
-                                                            optimizer=optimizer,
-                                                            max_lr=use_lr,
-                                                            total_steps=total_steps,
-                                                            epochs=NUM_EPOCHS)
+                                                optimizer=optimizer,
+                                                max_lr=use_lr,
+                                                total_steps=total_steps,
+                                                epochs=NUM_EPOCHS)
                         print(f"Using LR: {use_lr:.6f} for stage {current_stage+1}")
                         print(f"Total Steps: {total_steps}")
+        
+        # --- Store best_acc before the epoch runs ---
+        best_acc_before_epoch = best_acc
 
         scaler, history, best_acc,best_weights = train_validate_save_weights_history_plots(
-                                                                            model, train_loader, val_loader, optimizer, 
-                                                                            criterion, scheduler, scaler, mixup_fn,  ema, num_classes, 
-                                                                            PLOTS_DIR, SAVE_BEST, SAVE_LAST, TXT_LOG_FILE, 
-                                                                            epoch, best_acc, best_weights,
-                                                                            history, use_lr, CSV_LOG_FILE, NUM_EPOCHS,
-                                                                            enable_last_channel = ENABLE_CHANNEL_LAST, device = DEVICE)
-        # stats = get_gpu_usage(device=DEVICE)
-        # print(f"GPU Usage after epoch {epoch+1}: {stats}")
+                                                model, train_loader, val_loader, optimizer, 
+                                                criterion, scheduler, scaler, mixup_fn,  ema, num_classes, 
+                                                PLOTS_DIR, SAVE_BEST, SAVE_LAST, TXT_LOG_FILE, 
+                                                epoch, best_acc, best_weights,
+                                                history, use_lr, CSV_LOG_FILE, NUM_EPOCHS,
+                                                enable_last_channel = ENABLE_CHANNEL_LAST, device = DEVICE)
+        
+        # --- S3 UPLOAD BLOCK ---
+        if ENABLE_S3_UPLOAD and s3_client:
+            
+            # 1. Upload 'last_weights.pth' (if it was saved this epoch)
+            if (epoch + 1) % SAVE_FREQ_LAST == 0 or (epoch + 1) == NUM_EPOCHS:
+                try:
+                    s3_key = f"{S3_ROOT_FOLDER}/last_weights.pth"
+                    print(f"Uploading last checkpoint to s3://{S3_BUCKET_NAME}/{s3_key}")
+                    s3_client.upload_file(
+                        Filename=SAVE_LAST,     # Local file path
+                        Bucket=S3_BUCKET_NAME,  # S3 bucket
+                        Key=s3_key              # Path in S3
+                    )
+                except Exception as e:
+                    print(f"⚠️ S3 upload failed for {SAVE_LAST}: {e}")
+
+            # 2. Upload 'best_weights.pth' (if it was just updated)
+            if best_acc > best_acc_before_epoch:
+                try:
+                    s3_key = f"{S3_ROOT_FOLDER}/best_weights.pth"
+                    print(f"🎉 New best model! Uploading to s3://{S3_BUCKET_NAME}/{s3_key}")
+                    s3_client.upload_file(
+                        Filename=SAVE_BEST,     # Local file path
+                        Bucket=S3_BUCKET_NAME,  # S3 bucket
+                        Key=s3_key              # Path in S3
+                    )
+                except Exception as e:
+                    print(f"⚠️ S3 upload failed for {SAVE_BEST}: {e}")
+            
+            # 3. (Bonus) Upload the CSV log file every epoch
+            try:
+                s3_key_csv = f"{S3_ROOT_FOLDER}/training_log.csv"
+                s3_client.upload_file(CSV_LOG_FILE, S3_BUCKET_NAME, s3_key_csv)
+            except Exception as e:
+                print(f"⚠️ S3 upload failed for {CSV_LOG_FILE}: {e}")
+        # --- END OF S3 BLOCK ---
+
     # -----------------------------------------------------------
     print(f"\n🏁 Training Complete — Best Val Acc: {best_acc*100:.2f}%")
     print(f"✅ Best model: {SAVE_BEST}")
@@ -372,6 +411,17 @@ def main_epoch_wise():
             f"🖼️ Live plots in: {PLOTS_DIR}\n"
             f"🏁 Training Time: {history['time_lapsed'][-1]:.2f}m\n"
         )
+    
+    # --- FINAL S3 UPLOAD BLOCK ---
+    if ENABLE_S3_UPLOAD and s3_client:
+        try:
+            s3_key_txt = f"{S3_ROOT_FOLDER}/training_log.txt"
+            print(f"Uploading final text log to s3://{S3_BUCKET_NAME}/{s3_key_txt}")
+            s3_client.upload_file(TXT_LOG_FILE, S3_BUCKET_NAME, s3_key_txt)
+            print("✅ Final log upload complete.")
+        except Exception as e:
+            print(f"⚠️ S3 upload failed for {TXT_LOG_FILE}: {e}")
+    # --- END OF FINAL S3 BLOCK ---
+
 if __name__ == "__main__":
-    # main_stage_wise()
     main_epoch_wise()
