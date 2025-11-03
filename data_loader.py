@@ -132,7 +132,7 @@ def get_dataloaders(data_dir="data", batch_size=128, img_size=224, fraction=1.0,
     - If distributed=True, uses DistributedSampler and disables shuffle
     """
 
-    num_workers = min(8, max(8, torch.get_num_threads() // 2))
+    num_workers = 4
     torch.backends.cudnn.benchmark = True
 
     # Try importing torchvision.v2 transforms
