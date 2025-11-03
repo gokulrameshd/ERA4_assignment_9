@@ -76,6 +76,25 @@ S3_ROOT_FOLDER = "standard-run-1"         # <--- Name this experiment
 s3_client = None # <-- CHANGED
 if ENABLE_S3_UPLOAD:
     s3_client = init_s3_client(S3_BUCKET_NAME, S3_ROOT_FOLDER) # <-- CHANGED
+
+    # --- NEW: S3 AUTO-RESUME DOWNLOAD ---
+    # Try to download the last checkpoint from S3 if it doesn't exist locally
+    if not os.path.exists(SAVE_LAST):
+        print(f"Local checkpoint {SAVE_LAST} not found.")
+        s3_key = f"{S3_ROOT_FOLDER}/last_weights.pth"
+        print(f"Attempting to download from S3: s3://{S3_BUCKET_NAME}/{s3_key}")
+        try:
+            # Note: init_s3_client must return a standard boto3 client
+            s3_client.download_file(
+                S3_BUCKET_NAME,
+                s3_key,
+                SAVE_LAST
+            )
+            print("✅ Successfully downloaded 'last_weights.pth' from S3.")
+        except Exception as e:
+            print(f"⚠️ Failed to download checkpoint from S3 (This is normal if starting fresh): {e}")
+    # --- END OF NEW BLOCK ---
+
 # --- END OF S3 BLOCK ---
 
 os.makedirs(PLOTS_DIR, exist_ok=True)
@@ -105,6 +124,7 @@ def main():
 
     set_seed(42)
 
+    # --- FIXED DDP BLOCK ---
     if DISTRIBUTED :
         is_distributed = DISTRIBUTED and torch.cuda.is_available()
         local_rank = int(os.environ.get("LOCAL_RANK", 0))
@@ -116,16 +136,28 @@ def main():
             if rank == 0:
                 print(f"DDP initialized: world_size={world_size}, local_rank={local_rank}, rank={rank}")
         else:
+            # Case where DISTRIBUTED=True but cuda is not available
+            print("DDP specified but CUDA not available. Running in non-distributed mode.")
+            is_distributed = False
             world_size = 1
             rank = 0
+            local_rank = 0
+    else:
+        # This is the new block that fixes your code for DISTRIBUTED = False
+        is_distributed = False
+        world_size = 1
+        rank = 0
+        local_rank = 0
+    # --- END FIXED BLOCK ---
+
     print(f"\n🚀 Training started at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} on {DEVICE}")
 
     # -----------------------------------------------------------
     # 📦 Data
     # train_loader, val_loader, num_classes = get_dataloaders(DATA_DIR, BATCH_SIZE, IMG_SIZE)
     train_loader, val_loader, num_classes, train_sampler = get_dataloaders(DATA_DIR, BATCH_SIZE, IMG_SIZE,
-                                                                            distributed=is_distributed,
-                                                                        )
+                                                                         distributed=is_distributed,
+                                                                       )
     # -----------------------------------------------------------
     # 🧠 Model setup
     model = create_model(num_classes=num_classes, pretrained=False).to(DEVICE)
@@ -192,7 +224,7 @@ def main():
         use_lr = float(max(lr_floor, min(safe_lr, lr_ceiling)))
     else:   
         use_lr = 0.1 #Hardcoded for now 
-    
+        
     mixup_fn = None
     if USE_MIXUP:
         mixup_fn = get_mixup_fn(mixup_alpha=0.2, cutmix_alpha=1.0, mixup_prob=1.0, label_smoothing=0.1, num_classes=num_classes)
@@ -222,7 +254,7 @@ def main():
         except Exception:
             pass
         optimizer = optim.SGD(model.parameters(), lr=use_lr, momentum=0.9, weight_decay=1e-4)
-    
+        
 
     # -----------------------------------------------------------
     # 🌀 OneCycleLR Scheduler (per step)
@@ -241,19 +273,20 @@ def main():
     # -----------------------------------------------------------
     # 📊 Training Loop
     # --- AUTO RESUME ---
+    # This block now works! If the file was downloaded from S3, os.path.exists will be True.
     if os.path.exists(SAVE_LAST):
         start_epoch, best_acc, history = load_checkpoint(
             SAVE_LAST, model, optimizer, scheduler, scaler, device=DEVICE
         )
     else:
         start_epoch, best_acc, history = 0, 0.0, {"train_loss": [], "val_loss": [], "train_acc": [], "val_acc": [], "lr": [],
-                                        "mom": [] , "train_time": [], "val_time": [], "time_lapsed": [], "total_time_epoch": [], "total_time_train": []}
+                                         "mom": [] , "train_time": [], "val_time": [], "time_lapsed": [], "total_time_epoch": [], "total_time_train": []}
     print(f"🚀 Starting new training run from epoch {start_epoch}.")
 
 
     with open(CSV_LOG_FILE, "w") as log:
         log.write("Epoch,Train_Loss,Train_Acc,Train_Time,Val_Loss,Val_Acc,Val_Time,Learning_Rate,Momentum \n")
-    
+        
     for epoch in range(start_epoch, NUM_EPOCHS):
         if is_distributed and train_sampler is not None:
             train_sampler.set_epoch(epoch)
@@ -266,7 +299,7 @@ def main():
             mixup_fn = None
             criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
         train_results = train_one_epoch_imagenet(model, train_loader, optimizer, criterion, DEVICE,
-                        scheduler, scaler, mixup_fn=mixup_fn, enable_last_channel = ENABLE_CHANNEL_LAST,ema=ema,num_classes=num_classes)
+                                   scheduler, scaler, mixup_fn=mixup_fn, enable_last_channel = ENABLE_CHANNEL_LAST,ema=ema,num_classes=num_classes)
         train_loss = train_results["loss"]
         train_acc = train_results["acc"]
         scaler = train_results["scaler"]
@@ -352,7 +385,7 @@ def main():
                 f"LR: {current_lr:.6f} | Train Acc: {train_acc*100:.2f}% | Val Acc: {val_acc*100:.2f}%"
             )
 
-        
+            
 
             # ---- LOG ----
             with open(TXT_LOG_FILE, "a") as log:
