@@ -62,7 +62,7 @@ TXT_LOG_FILE = f"./{ROOT_DIR}/training_log.txt"
 PLOTS_DIR = f"./{ROOT_DIR}/plots"
 USE_MIXUP = True
 ENABLE_LR_FINDER = False
-SAVE_FREQ_LAST = 5   # only overwrite last_weights every N epochs (reduce IO)
+SAVE_FREQ_LAST = 1   # only overwrite last_weights every N epochs (reduce IO)
 ENABLE_EMA = False
 ENABLE_CHANNEL_LAST = True
 
