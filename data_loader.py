@@ -20,7 +20,8 @@ def get_base_transforms():
     - Falls back to CPU transforms otherwise
     """
 
-    num_workers = min(8, max(4, torch.get_num_threads() // 2))
+    #num_workers = min(8, max(4, torch.get_num_threads() // 2))
+    num_workers =4
     torch.backends.cudnn.benchmark = True
 
     # Try importing torchvision.v2 transforms
