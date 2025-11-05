@@ -223,7 +223,7 @@ def main():
         lr_floor, lr_ceiling = 1e-6, 0.1
         use_lr = float(max(lr_floor, min(safe_lr, lr_ceiling)))
     else:   
-        use_lr = 0.1 #Hardcoded for now 
+        use_lr = 0.4 #Hardcoded for now 
         
     mixup_fn = None
     if USE_MIXUP:
