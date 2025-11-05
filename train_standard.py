@@ -49,7 +49,7 @@ SEED = 42
 # ⚙️ CONFIG
 # ==============================================================
 # DATA_DIR = "/home/deep/Documents/jeba/Classification_R_D/res/data"
-DATA_DIR = "/opt/dlami/nvme/imagenet-1k"  # <--- !! MAKE SURE THIS IS CORRECT !!
+DATA_DIR = "/data"  # <--- !! MAKE SURE THIS IS CORRECT !!
 BATCH_SIZE = 512
 IMG_SIZE = 224
 NUM_EPOCHS = 60
