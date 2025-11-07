@@ -14,8 +14,8 @@
 *.JPEG 
 
 # Ignore CSV files
-*.csv
-*.txt
+# *.csv
+# *.txt
 *.log
 *.json
 *.yaml

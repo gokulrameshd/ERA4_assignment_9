@@ -13,7 +13,8 @@ session_9/training/ERA4_assignment_9/
 ├── 🎯 Training Strategies
 │   ├── train_standard.py             # Standard training (LR Finder + OneCycle)
 │   ├── finetune.py                   # Fine-tuning from pretrained weights
-│   └── train_progessive_resizing.py  # Progressive resizing strategy
+│   ├── train_progessive_resizing.py  # Progressive resizing strategy
+│   └── train_hybrid.py               # Hybrid progressive + freezing curriculum
 │
 ├── 🧠 Core Components
 │   ├── data_loader.py                # Advanced data loading with GPU transforms
@@ -30,6 +31,7 @@ session_9/training/ERA4_assignment_9/
 ├── 💾 Outputs
 │   ├── train/                        # Standard training outputs
 │   ├── finetuned/                    # Fine-tuning outputs
+│   ├── hybrid_train_stage_wise_4_stage/  # Hybrid run logs, checkpoints, plots (created after first run)
 │   └── sample_data/                  # Dataset samples
 │
 └── 🛠️ Utilities
@@ -188,6 +190,61 @@ resize_schedule = {sum(stage["epochs"] for stage in stages[:i]): stage["img_size
 
 ---
 
+### 4. **Hybrid Progressive + Freezing** (`train_hybrid.py`)
+**Purpose**: Stage-wise curriculum that blends progressive resizing, data fraction ramps, selective layer freezing, and optional EMA to reach high accuracy faster.
+
+**Key Features**:
+- ✅ Multi-stage curriculum (data fraction + resolution + batch resize) with automatic stage transitions
+- ✅ Global or stage-wise OneCycleLR scheduling via `create_onecycle_scheduler_global` / `_stage_wise`
+- ✅ Optional progressive freezing/unfreezing with `set_trainable_layers`
+- ✅ Mixup/CutMix toggled per stage; label smoothing when augmentations are disabled
+- ✅ `channels_last`, `torch.compile`, AMP, and GradScaler for throughput
+- ✅ Rich logging (CSV/TXT), live plots, S3 checkpoint sync (`hybrid-run-1/` prefix by default)
+- ✅ Hooks for EMA tracking (`ModelEMA`) and LR dampening between stages
+
+**Default Stage Schedule** (`ENABLE_PROGRESSIVE_FREEZING=False`):
+
+| Stage | Data Fraction | Image Size | Batch | Epochs | Mixup | LR Scale |
+|-------|---------------|------------|-------|--------|-------|----------|
+| 1 | 50% | 128 | 1024 | 15 | ✅ | 1.00 |
+| 2 | 75% | 160 | 768 | 15 | ✅ | 0.70 |
+| 3 | 100% | 224 | 512 | 30 | ✅ | 0.50 |
+| 4 | 100% | 224 | 512 | 20 | ❌ | 0.25 |
+
+Toggle `ENABLE_PROGRESSIVE_FREEZING=True` to switch to the expert curriculum from `R&D/hybrid_strategy.md`, which adds late-stage freezing (`layer2`/`layer3`), lower LR scales, and optional EMA for an expected **78–80%** ImageNet top-1 with ResNet-50.
+
+**Configuration Snippet**:
+```python
+ENABLE_HYBRID_TRAINING = True
+ENABLE_STAGE_WISE_SCHEDULER = False  # global OneCycle across total steps
+ENABLE_PROGRESSIVE_FREEZING = False  # flip to True for expert schedule
+ENABLE_EMA = False                   # recommended True when freezing
+ROOT_DIR = "hybrid_train_stage_wise_4_stage"
+SAVE_FREQ_LAST = 5
+```
+
+**Outputs**: Stage-aware plots and logs under the chosen `ROOT_DIR` (one subdirectory per run). Best/last checkpoints plus CSV/TXT logs mirror the standard pipeline, with optional automatic S3 uploads (`hybrid-run-1/best_weights.pth`, etc.).
+
+**Best For**:
+- Large-scale runs where early epochs should be cheap (small images, partial data)
+- Experiments that need to compare progressive freezing vs unfreezing
+- Practitioners chasing >78% ImageNet accuracy on ResNet-50 with limited wall-clock
+
+---
+
+## 📊 Strategy Performance Snapshot
+
+| Strategy | Backbone | Batch Size | Epoch Budget | Final Top-1 | Notes |
+|----------|----------|------------|--------------|-------------|-------|
+| Standard (`train_standard.py`) | ResNet-50 | 512 | 60 | **75.0%** (measured) | LR Finder → OneCycleLR, mixup last-epoch disable |
+| Fine-tuning (`finetune.py`) | ResNet-50 | 1024 | 50 | ~90% (pretrained start) | Transfer from best checkpoint, large batch |
+| Progressive (`train_progessive_resizing.py`) | ResNet-50 | 4096→256 | 75 | ~88% (historical) | 3-stage resize + scheduler auto-scaling |
+| Hybrid (`train_hybrid.py`) | ResNet-50 | 1024→512 | 76 (default) | 78–80% (expected) | Progressive resize + freezing + optional EMA |
+
+*Measured values come from `standard_train_50`. Progressive/fine-tune figures reflect prior internal runs; re-run scripts to refresh logs for the current environment.*
+
+---
+
 ## 🛠️ Advanced Data Loading (`data_loader.py`)
 
 ### **GPU-Accelerated Transforms**
@@ -268,25 +325,6 @@ python train_progessive_resizing.py
 # Outputs: train/best_weights.pth (from final stage)
 ```
 
----
-
-## 📊 Performance Characteristics
-
-### **Training Speed Comparison**
-
-| Strategy | Batch Size | Image Size | Epochs | Memory Usage | Speed | Key Features |
-|----------|------------|------------|--------|--------------|-------|--------------|
-| Standard | 512 | 224×224 | 60 | ~12GB | Baseline | LR Finder, AMP, Mixup |
-| Fine-tuning | 1024 | 224×224 | 50 | ~12GB | 2x faster | Transfer Learning |
-| Progressive | 4096→256 | 56→224 | 75 total | ~16GB peak | 3x faster | Dynamic Resizing, CSV Logging |
-
-### **Convergence Analysis**
-
-| Strategy | Initial Accuracy | Final Accuracy | Convergence Time |
-|----------|------------------|----------------|------------------|
-| Standard | ~0.3% | 75.0% | 60 epochs |
-| Fine-tuning | ~60% | ~90% | 50 epochs |
-| Progressive | ~15% | ~88% | 75 epochs |
 
 ---
 
@@ -439,6 +477,14 @@ ls finetuned/plots/
 python train_progessive_resizing.py
 
 # Monitor stage transitions in output
+```
+
+### **4. Hybrid Progressive + Freezing**
+```bash
+# Enable/adjust flags inside train_hybrid.py first (progressive freezing, EMA, etc.)
+python train_hybrid.py
+
+# Outputs: hybrid_train_stage_wise_4_stage/ (or custom ROOT_DIR) with stagewise plots/logs
 ```
 
 ---

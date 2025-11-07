@@ -1,0 +1,26 @@
+# Core Deep Learning
+torch>=2.4.0
+torchvision>=0.19.0
+torchaudio>=2.4.0
+
+# Learning Rate Finder (latest GPU-safe fork)
+torch-lr-finder>=0.2.2
+
+# Image Models & Augmentations
+timm>=1.0.9
+albumentations>=1.4.11
+opencv-python>=4.10.0.84
+
+# Data & Visualization
+matplotlib>=3.9.2
+numpy>=1.26.4
+pandas>=2.2.3
+tqdm>=4.66.5
+seaborn>=0.13.2
+
+# Training Utilities
+torchmetrics>=1.5.1
+scikit-learn>=1.5.2
+
+# Optional (for reproducibility and config)
+pyyaml>=6.0.2
