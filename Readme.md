@@ -11,7 +11,7 @@ This directory contains multiple advanced training strategies for deep learning 
 ```
 session_9/training/ERA4_assignment_9/
 ├── 🎯 Training Strategies
-│   ├── train.py                      # Standard training with LR Finder
+│   ├── train_standard.py             # Standard training (LR Finder + OneCycle)
 │   ├── finetune.py                   # Fine-tuning from pretrained weights
 │   └── train_progessive_resizing.py  # Progressive resizing strategy
 │
@@ -41,30 +41,88 @@ session_9/training/ERA4_assignment_9/
 
 ## 🎯 Training Strategies Comparison
 
-### 1. **Standard Training** (`train.py`)
-**Purpose**: Complete training from scratch with optimal hyperparameters
+### 1. **Standard Training** (`train_standard.py`)
+**Purpose**: Single-stage ImageNet training from scratch with automated LR discovery and S3-ready logging.
 
 **Key Features**:
-- ✅ Learning Rate Finder with automatic optimization
-- ✅ OneCycleLR scheduler for smooth convergence
-- ✅ Mixed Precision Training (AMP)
-- ✅ GPU-accelerated transforms (torchvision v2)
-- ✅ Live plotting and monitoring
-- ✅ Model compilation with torch.compile()
+- ✅ Learning Rate Finder (AMP-safe) with CSV and annotated plot export
+- ✅ OneCycleLR scheduler with auto LR scaling from LR Finder output
+- ✅ Mixed Precision training via `torch.amp.GradScaler`
+- ✅ Optional Mixup/CutMix augmentation with late-epoch disablement
+- ✅ Torch.compile integration + channel-last tensor layout for throughput
+- ✅ Automated checkpointing (best/last) with optional S3 uploads
+- ✅ Live metric plots (accuracy, loss, LR, momentum, time)
 
-**Configuration**:
+**Configuration** (standard_train_50 run):
 ```python
-DATA_DIR = "./data"
-BATCH_SIZE = 256
+DATA_DIR = "/data"
+BATCH_SIZE = 512
 IMG_SIZE = 224
-NUM_EPOCHS = 25
-Model: ResNet (pretrained=False)
+NUM_EPOCHS = 60
+MODEL: ResNet-50 (from `create_model`, pretrained=False)
+USE_MIXUP = True  # disabled automatically for last 10% epochs
+ENABLE_LR_FINDER = True
+ROOT_DIR = "standard_train_50"
 ```
 
 **Best For**: 
-- Training from scratch
-- Finding optimal hyperparameters
-- Research and experimentation
+- Training from scratch with automated LR discovery
+- Distributed or single-GPU ImageNet-scale experiments
+- Research workflows that need rich logging + resumable checkpoints
+
+---
+
+## 📈 `standard_train_50` Run Summary (ResNet-34)
+
+- **Dataset**: ImageNet-1K (`/data`) with GPU-accelerated torchvision v2 transforms
+- **Optimizer/Scheduler**: SGD + momentum (0.9) with OneCycleLR tuned from LR Finder (safe LR ≈ `0.068`).
+- **Augmentation Strategy**: Mixup + CutMix (`alpha=0.2/1.0`) until the final 6 epochs, then label-smoothed CE (ε=0.1).
+- **Precision**: AMP (`torch.amp.GradScaler`) + TF32; `torch.compile` and `channels_last` enabled.
+- **Checkpointing**: Best + last checkpoints plus CSV/TXT logs saved under `./standard_train_50/` with optional S3 sync hooks.
+- **Final Top-1 Val Accuracy**: **75.04%** (epoch 60) with `val_loss ≈ 1.94`.
+
+### Milestone Checkpoints
+
+| Epoch | Top‑1 Val Acc | Notes |
+|-------|---------------|-------|
+| 5 | 23.2% | Warmup complete, LR ramping via OneCycle rise phase |
+| 15 | 47.8% | Mixup still active; first big jump after LR peak |
+| 29 | 54.0% | LR entering anneal; stability improves |
+| 41 | 58.9% | Start of low-LR regime, loss dips below 2.0 |
+| 50 | 67.7% | Mixup disabled automatically (last 10% epochs) |
+| 60 | **75.0%** | Minimum LR reached; EMA off, raw model saved |
+
+### Metric Dashboards
+
+![Accuracy vs Epoch](./standard_train_50/plots/accuracy_live.png)
+*Train/val accuracy tracked live; steep rise until epoch 20, then steady OneCycle anneal.*
+
+![Loss vs Epoch](./standard_train_50/plots/loss_live.png)
+*Cross-entropy drops sharply post-mixup disablement; validation loss bottoms near 1.94.*
+
+![Accuracy vs Time (minutes)](./standard_train_50/plots/accuracy_time.png)
+*Shows ~42 GPU-hours total. Mixup removal accelerates accuracy climb despite low LR.*
+
+![Loss vs Time (minutes)](./standard_train_50/plots/loss_time.png)
+*Helps correlate learning plateaus with wall-clock, useful for resuming runs.*
+
+![Learning Rate Schedule](./standard_train_50/plots/lr_live.png)
+*Clear OneCycle profile: aggressive ramp to ~0.24, gradual cosine decay to 1e-6.*
+
+![Momentum Schedule](./standard_train_50/plots/momentum_live.png)
+*Inverse OneCycle momentum mirrors LR, stabilizing late-stage convergence.*
+
+![LR Finder Curve](./standard_train_50/plots/lr_finder_plot.png)
+*Annotated LR Finder (100 iterations) selected a safe max LR of ~0.068 for OneCycle scaling.*
+
+### Training Log Highlights (`standard_train_50/training_log.txt`)
+
+- Each epoch logs train/val metrics, current LR/momentum, and time; append-only for resume safety.
+- Log entries are mirrored to `training_log.csv` for pandas/matplotlib post-analysis.
+- Final block records best/last checkpoints and total wall time (`~42.6h`).
+- Designed for automated S3 sync via `upload_file_to_s3` (no-op locally when disabled).
+
+> ✅ Tip: Load `training_log.csv` into `ERA4S9_version_2.ipynb` (or your own analytics notebook) to smooth curves and compare future runs.
 
 ---
 
@@ -188,15 +246,15 @@ else:
 
 ### **Standard Training**
 ```bash
-# Basic training from scratch
-python train.py
+# Basic training from scratch (ResNet-34)
+python train_standard.py
 
-# Outputs: train/best_weights.pth, train/plots/, train/training_log.txt
+# Outputs: standard_train_50/best_weights.pth, standard_train_50/plots/, standard_train_50/training_log.txt
 ```
 
 ### **Fine-tuning**
 ```bash
-# Requires pretrained weights from train.py
+# Requires pretrained weights from train_standard.py
 python finetune.py
 
 # Outputs: finetuned/best_weights.pth, finetuned/plots/
@@ -218,7 +276,7 @@ python train_progessive_resizing.py
 
 | Strategy | Batch Size | Image Size | Epochs | Memory Usage | Speed | Key Features |
 |----------|------------|------------|--------|--------------|-------|--------------|
-| Standard | 256 | 224×224 | 25 | ~8GB | Baseline | LR Finder, AMP |
+| Standard | 512 | 224×224 | 60 | ~12GB | Baseline | LR Finder, AMP, Mixup |
 | Fine-tuning | 1024 | 224×224 | 50 | ~12GB | 2x faster | Transfer Learning |
 | Progressive | 4096→256 | 56→224 | 75 total | ~16GB peak | 3x faster | Dynamic Resizing, CSV Logging |
 
@@ -226,7 +284,7 @@ python train_progessive_resizing.py
 
 | Strategy | Initial Accuracy | Final Accuracy | Convergence Time |
 |----------|------------------|----------------|------------------|
-| Standard | ~10% | ~85% | 25 epochs |
+| Standard | ~0.3% | 75.0% | 60 epochs |
 | Fine-tuning | ~60% | ~90% | 50 epochs |
 | Progressive | ~15% | ~88% | 75 epochs |
 
@@ -356,17 +414,17 @@ class ProgressiveResizeDataset(torch.utils.data.Dataset):
 cd session_9/training/ERA4_assignment_9
 
 # Run standard training
-python train.py
+python train_standard.py
 
 # Check results
-ls train/plots/  # View training plots
-cat train/training_log.txt  # View training log
+ls standard_train_50/plots/  # View training plots
+cat standard_train_50/training_log.txt  # View training log
 ```
 
 ### **2. Fine-tuning**
 ```bash
 # Ensure you have pretrained weights
-ls train/best_weights.pth
+ls standard_train_50/best_weights.pth
 
 # Run fine-tuning
 python finetune.py
@@ -381,6 +439,62 @@ ls finetuned/plots/
 python train_progessive_resizing.py
 
 # Monitor stage transitions in output
+```
+
+---
+
+## ☁️ AWS g5.24xlarge Training (Single/Multi‑GPU with DDP)
+
+### Prerequisites
+- **AMI**: AWS Deep Learning AMI (Ubuntu)
+- **GPUs**: g5.24xlarge (4× A10G 24GB)
+- **Data path**: `/opt/dlami/nvme/imagenet-1k/{train,val}/...`
+- Optional: sync from S3
+```bash
+aws s3 sync s3://YOUR_BUCKET/imagenet-1k /opt/dlami/nvme/imagenet-1k --no-progress
+```
+
+### Verify environment
+```bash
+nvidia-smi
+python -c "import torch; print(torch.cuda.is_available(), torch.cuda.device_count())"  # expect True, 4
+```
+
+### Recommended NCCL env (single-node)
+```bash
+export NCCL_DEBUG=INFO
+export NCCL_IB_DISABLE=1
+export NCCL_SOCKET_IFNAME=eth0
+```
+
+### Single‑GPU run
+```bash
+cd /mnt/fb0d7ad2-8ef1-4b6e-b1d2-0c53fa7701b7/TSAI/ERA/session_9/training/ERA4_assignment_9
+python train_standard.py
+```
+
+### Multi‑GPU run (DistributedDataParallel)
+This project supports DDP via a `--distributed` flag in `train_standard.py` and `DistributedSampler` in `data_loader.py`.
+
+Run 4 GPUs on a single g5.24xlarge:
+```bash
+cd /mnt/fb0d7ad2-8ef1-4b6e-b1d2-0c53fa7701b7/TSAI/ERA/session_9/training/ERA4_assignment_9
+torchrun --standalone --nproc_per_node=4 train_standard.py --distributed
+```
+
+Notes:
+- `BATCH_SIZE` is per‑GPU; global batch = `BATCH_SIZE × 4`. Adjust LR linearly if you change global batch.
+- Checkpoints/plots should be written by rank 0 only (handled in code when `--distributed`).
+- For `train_hybrid.py` or `train_progessive_resizing.py`, use the same pattern once DDP is enabled there.
+
+### Minimal code switches (if you’re enabling DDP now)
+- `data_loader.get_dataloaders(..., distributed=True)` uses `DistributedSampler` and disables shuffle.
+- `train_standard.py` adds `--distributed`, initializes process group (`nccl`), wraps model with `DDP`, calls `train_sampler.set_epoch(epoch)`, and guards I/O on rank 0.
+
+### Quick health checks
+```bash
+nvidia-smi                                  # all 4 GPUs should be active
+tail -f standard_train_50/training_log.txt  # rank-0 logs
 ```
 
 ---
@@ -437,8 +551,8 @@ This project is licensed under the MIT License.
 
 ---
 
-*Last Updated: December 2024*  
+*Last Updated: November 2025*  
 *Version: 4.0*  
 *Total Strategies: 3*  
 *Advanced Features: ProgressiveResizeDataset, Smart Scheduler, CSV Logging*  
-*Best Performance: Progressive Resizing (88% accuracy)*
+*Best Performance: Progressive Resizing (88% accuracy) | Latest Standard Run: 75.0% accuracy*  

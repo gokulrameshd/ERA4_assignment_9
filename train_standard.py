@@ -54,14 +54,14 @@ BATCH_SIZE = 512
 IMG_SIZE = 224
 NUM_EPOCHS = 60
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-ROOT_DIR = "standard_train"
+ROOT_DIR = "standard_train_50"
 SAVE_BEST = f"./{ROOT_DIR}/best_weights.pth"
 SAVE_LAST = f"./{ROOT_DIR}/last_weights.pth"
 CSV_LOG_FILE = f"./{ROOT_DIR}/training_log.csv"
 TXT_LOG_FILE = f"./{ROOT_DIR}/training_log.txt"
 PLOTS_DIR = f"./{ROOT_DIR}/plots"
 USE_MIXUP = True
-ENABLE_LR_FINDER = False
+ENABLE_LR_FINDER = True
 SAVE_FREQ_LAST = 1   # only overwrite last_weights every N epochs (reduce IO)
 ENABLE_EMA = False
 ENABLE_CHANNEL_LAST = True
@@ -69,7 +69,7 @@ ENABLE_CHANNEL_LAST = True
 # ==============================================================
 # ⚙️ S3 CHECKPOINT CONFIG (Now much cleaner)
 # ==============================================================
-ENABLE_S3_UPLOAD = True # Set to False to disable S3 uploads
+ENABLE_S3_UPLOAD = False # Set to False to disable S3 uploads
 S3_BUCKET_NAME = "s9-imagenet-checkpoint" # <--- !! YOUR BUCKET !!
 S3_ROOT_FOLDER = "standard-run-1"         # <--- Name this experiment
 
